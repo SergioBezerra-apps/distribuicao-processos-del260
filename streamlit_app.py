@@ -6,7 +6,7 @@ import smtplib
 from email.message import EmailMessage
 
 # =============================================================================
-# Função para envio de e-mail com anexos
+# Função para envio de e-mail com um único anexo (usada para os informantes)
 # =============================================================================
 def send_email_with_attachments(to_emails, subject, body, attachment_bytes, filename):
     smtp_server = 'smtp.gmail.com'
@@ -31,6 +31,36 @@ def send_email_with_attachments(to_emails, subject, body, attachment_bytes, file
             st.info("E-mail com anexos enviado com sucesso!")
     except Exception as e:
         st.error(f"Erro ao enviar e-mail: {e}")
+
+# =============================================================================
+# Função para envio de e-mail com múltiplos anexos (usada para os gestores)
+# =============================================================================
+def send_email_with_multiple_attachments(to_emails, subject, body, attachments):
+    # attachments: lista de tuplas (filename, file_bytes)
+    smtp_server = 'smtp.gmail.com'
+    smtp_port = 465
+    smtp_username = 'sergiolbezerralj@gmail.com'
+    smtp_password = 'dimwpnhowxxeqbes'
+    
+    msg = EmailMessage()
+    msg['Subject'] = subject
+    msg['From'] = smtp_username
+    msg['To'] = ', '.join(to_emails)
+    msg.set_content(body)
+    
+    for filename, file_bytes in attachments:
+        msg.add_attachment(file_bytes,
+                           maintype='application',
+                           subtype='octet-stream',
+                           filename=filename)
+    try:
+        with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=10) as server:
+            server.set_debuglevel(1)
+            server.login(smtp_username, smtp_password)
+            server.send_message(msg)
+            st.info("E-mail com múltiplos anexos enviado com sucesso!")
+    except Exception as e:
+        st.error(f"Erro ao enviar e-mail com múltiplos anexos: {e}")
 
 # =============================================================================
 # Função para converter um DataFrame em bytes (para download)
@@ -168,7 +198,7 @@ if "numero" not in st.session_state:
 # =============================================================================
 # Interface Gráfica (Streamlit)
 # =============================================================================
-st.title("Distribuição de Processos da Del. 260")
+st.title("Distribuição de processos da Del. 260")
 st.markdown("### Faça o upload dos arquivos e configure a distribuição.")
 
 # Upload dos arquivos
@@ -186,7 +216,7 @@ st.markdown(f"**Modo selecionado:** {modo}")
 
 # Campo para e-mails dos gestores/revisores (separados por vírgula)
 managers_emails = st.text_input("E-mails dos gestores/revisores (separados por vírgula):", 
-                                value="sergiolblj@tcerj.tc.br, sergiollima2@hotmail.com")
+                                value="sergiolblj@tcerj.tc.br, sergiollima2@hotmail.com, fabiovf@tcerj.tc.br, annapc@tcerj.tc.br")
 
 if st.button("Executar Distribuição"):
     if processos_file and obs_file and disp_file:
@@ -205,8 +235,7 @@ if st.button("Executar Distribuição"):
             st.download_button(f"Baixar para {informante}", data=file_bytes, file_name=filename,
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         
-        # Envio de e-mails:
-        # No modo Teste, envia apenas para os gestores; no modo Produção, envia também para os informantes.
+        # Envio de e-mails para os informantes (no modo Produção)
         if test_mode:
             st.info("Modo Teste: E-mails para informantes NÃO serão enviados; apenas os e-mails dos gestores serão enviados.")
         else:
@@ -222,11 +251,15 @@ if st.button("Executar Distribuição"):
                 else:
                     st.write(f"E-mail não encontrado para {informante}")
         
-        # Envia a planilha geral para os gestores/revisores (sempre enviar)
+        # Envio de e-mail aos gestores com a planilha geral e os arquivos individuais
         managers_list = [e.strip() for e in managers_emails.split(",") if e.strip()]
-        subject_geral = "Planilha Geral de Processos Distribuídos"
-        body_geral = "Segue em anexo a planilha geral com todos os processos distribuídos."
-        send_email_with_attachments(managers_list, subject_geral, body_geral, geral_bytes, geral_filename)
+        subject_geral = "Planilha Geral e Individuais de Processos Distribuídos"
+        body_geral = "Segue em anexo a planilha geral e os arquivos individuais com os processos distribuídos."
+        attachments = [(geral_filename, geral_bytes)]
+        for informante, file_bytes in individual_files.items():
+            filename = f"{informante.replace(' ', '_')}_{numero}_processos_{datetime.now().strftime('%Y%m%d')}.xlsx"
+            attachments.append((filename, file_bytes))
+        send_email_with_multiple_attachments(managers_list, subject_geral, body_geral, attachments)
         
         # Atualiza o valor padrão da numeração para a próxima execução
         st.session_state.numero = numero + 1
