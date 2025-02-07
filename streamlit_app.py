@@ -168,7 +168,7 @@ if "numero" not in st.session_state:
 # =============================================================================
 # Interface Gráfica (Streamlit)
 # =============================================================================
-st.title("Distribuição de Processos - Interface Gráfica")
+st.title("Distribuição de Processos da Del. 260")
 st.markdown("### Faça o upload dos arquivos e configure a distribuição.")
 
 # Upload dos arquivos
