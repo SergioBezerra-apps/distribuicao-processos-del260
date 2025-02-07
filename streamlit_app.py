@@ -95,7 +95,14 @@ def run_distribution(processos_file, obs_file, disp_file, numero, test_mode=True
     df_disp = pd.read_excel(disp_file)
     df_disp.columns = df_disp.columns.str.strip()
     df_disp["disponibilidade"] = df_disp["disponibilidade"].str.lower()
+    # Lista dos informantes disponíveis
     available = df_disp[df_disp["disponibilidade"] == "sim"]["informantes"].tolist()
+    # Cria dicionário com os e-mails dos informantes disponíveis (a partir da coluna "e-mail")
+    emails_informantes = {
+        row["informantes"]: row["e-mail"]
+        for _, row in df_disp.iterrows()
+        if row["disponibilidade"] == "sim"
+    }
     
     # Listas originais dos informantes (grupos A e B)
     informantes_grupo_a = ["Alessandro Rios", "André", "Rosane"]
@@ -113,9 +120,13 @@ def run_distribution(processos_file, obs_file, disp_file, numero, test_mode=True
     df_grupo_b_data = df_grupo_b_data.sort_values(by="Dias no Orgão", ascending=False).reset_index(drop=True)
     
     if informantes_grupo_a:
-        df_grupo_a_data["Informante"] = [informantes_grupo_a[i % len(informantes_grupo_a)] for i in range(len(df_grupo_a_data))]
+        df_grupo_a_data["Informante"] = [
+            informantes_grupo_a[i % len(informantes_grupo_a)] for i in range(len(df_grupo_a_data))
+        ]
     if informantes_grupo_b:
-        df_grupo_b_data["Informante"] = [informantes_grupo_b[i % len(informantes_grupo_b)] for i in range(len(df_grupo_b_data))]
+        df_grupo_b_data["Informante"] = [
+            informantes_grupo_b[i % len(informantes_grupo_b)] for i in range(len(df_grupo_b_data))
+        ]
     
     df_geral = pd.concat([df_grupo_a_data, df_grupo_b_data], ignore_index=True)
     
@@ -146,7 +157,7 @@ def run_distribution(processos_file, obs_file, disp_file, numero, test_mode=True
         filename = f"{informante.replace(' ', '_')}_{numero}_processos_{datetime.now().strftime('%Y%m%d')}.xlsx"
         individual_files[informante] = to_excel_bytes(df_informante)
     
-    return geral_filename, geral_bytes, individual_files
+    return geral_filename, geral_bytes, individual_files, emails_informantes
 
 # =============================================================================
 # Configuração de número (usando session_state para manter a numeração entre execuções)
@@ -173,24 +184,15 @@ modo = st.radio("Selecione o modo:", options=["Teste", "Produção"])
 test_mode = (modo == "Teste")
 st.markdown(f"**Modo selecionado:** {modo}")
 
-# Editor de e-mails dos informantes (permitindo edição)
-default_emails = pd.DataFrame({
-    "Informante": ["Alessandro Rios", "André", "Rosane", "Lúcia", "Mônica Aranha", "Rodrigo", "Wellington", "Zezinho"],
-    "Email": ["alessandrorr@tcerj.tc.br", "andrelbr@tcerj.tc.br", "rosanec@tcerj.tc.br", "luciamfs@tcerj.tc.br",
-              "monicaag@tcerj.tc.br", "rodrigob@tcerj.tc.br", "wellinsc@tcerj.tc.br", "josecn@tcerj.tc.br"]
-})
-st.markdown("### E-mails dos Informantes (pode editar)")
-edited_emails = st.experimental_data_editor(default_emails, num_rows="dynamic", key="emails_editor")
-# Converte o DataFrame editado em um dicionário: {Informante: Email}
-emails_informantes = dict(zip(edited_emails["Informante"], edited_emails["Email"]))
-
 # Campo para e-mails dos gestores/revisores (separados por vírgula)
 managers_emails = st.text_input("E-mails dos gestores/revisores (separados por vírgula):", 
                                 value="sergiolblj@tcerj.tc.br, sergiollima2@hotmail.com")
 
 if st.button("Executar Distribuição"):
     if processos_file and obs_file and disp_file:
-        geral_filename, geral_bytes, individual_files = run_distribution(processos_file, obs_file, disp_file, numero, test_mode)
+        geral_filename, geral_bytes, individual_files, emails_informantes = run_distribution(
+            processos_file, obs_file, disp_file, numero, test_mode
+        )
         st.success("Distribuição executada com sucesso!")
         
         # Disponibiliza o download da planilha geral
@@ -213,7 +215,9 @@ if st.button("Executar Distribuição"):
                 email_destino = emails_informantes.get(informante, "")
                 if email_destino:
                     subject = f"Distribuição de Processos - {informante}"
-                    body = "Segue em anexo os processos distribuídos para você."
+                    body = (f"Olá {informante}, espero que esteja bem!\n\n"
+                            "Essa é a sua lista semanal de processos.\n\n"
+                            "Qualquer dúvida, conversa com a gente!")
                     send_email_with_attachments([email_destino], subject, body, file_bytes, arquivo_informante)
                 else:
                     st.write(f"E-mail não encontrado para {informante}")
