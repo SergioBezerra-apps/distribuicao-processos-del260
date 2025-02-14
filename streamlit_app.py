@@ -28,7 +28,7 @@ def send_email_with_attachments(to_emails, subject, body, attachment_bytes, file
     )
     try:
         with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=10) as server:
-            server.set_debuglevel(1)  # ajuste para 0 se preferir menos mensagens
+            server.set_debuglevel(1)  # ajuste para 0 para menos mensagens
             server.login(smtp_username, smtp_password)
             server.send_message(msg)
             st.info(f"E-mail enviado para: {to_emails}")
@@ -77,14 +77,12 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     
     # Seleciona as colunas necessárias
     required_cols = [
-        "Processo", "Grupo Natureza", "Orgão Origem", "Dias no Orgão", 
+        "Processo", "Grupo Natureza", "Orgão Origem", "Dias no Orgão",
         "Tempo TCERJ", "Data Última Carga", "Descrição Informação", "Funcionário Informação"
     ]
     df = df[required_cols]
     
-    # Normaliza as colunas de interesse:
-    # Converte "Descrição Informação" para minúsculas e remove espaços;
-    # "Funcionário Informação" é mantido com espaços removidos.
+    # Normaliza as colunas de interesse
     df["Descrição Informação"] = df["Descrição Informação"].astype(str).str.strip().str.lower()
     df["Funcionário Informação"] = df["Funcionário Informação"].astype(str).str.strip()
     
@@ -105,13 +103,13 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     df = df.drop(columns=["Data Última Carga"])
     
     # --- Separação dos Processos ---
-    # Pré-Atribuídos: processos em que "Descrição Informação" está em ["em elaboração", "concluída"]
-    # E "Funcionário Informação" não está vazio.
+    # Pré-Atribuídos: processos em que "descrição informação" é "em elaboração" ou "concluída"
+    # E "funcionário informação" não está vazio.
     mask_preassigned = df["Descrição Informação"].isin(["em elaboração", "concluída"]) & (df["Funcionário Informação"] != "")
     pre_df = df[mask_preassigned].copy()
     pre_df["Informante"] = pre_df["Funcionário Informação"]
     
-    # Residual: Complemento dos pré-atribuídos (todos os processos que não foram pré-atribuídos)
+    # Residual: o complemento dos pré-atribuídos
     mask_residual = ~mask_preassigned
     res_df = df[mask_residual].copy()
     
@@ -121,7 +119,7 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     df_disp.columns = df_disp.columns.str.strip()
     df_disp["disponibilidade"] = df_disp["disponibilidade"].str.lower()
     df_disp = df_disp[df_disp["disponibilidade"] == "sim"].copy()
-    # Converte os nomes dos informantes para maiúsculas para padronização
+    # Padroniza os nomes para maiúsculas
     informantes_emails = dict(zip(df_disp["informantes"].str.upper(), df_disp["email"]))
     
     # Grupos de informantes (em maiúsculas)
@@ -145,6 +143,32 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     
     res_assigned = pd.concat([df_grupo_a, df_grupo_b], ignore_index=True)
     
+    # --- Cálculo do Critério para ordenação ---
+    def calcula_criterio(row):
+        if pd.isna(row["Processo"]) or row["Processo"] == "":
+            return ""
+        elif row["Tempo TCERJ"] > 1765:
+            return "01 Mais de cinco anos de autuado"
+        elif 1220 < row["Tempo TCERJ"] < 1765:
+            return "02 A completar 5 anos de autuado"
+        elif row["Dias no Orgão"] >= 150:
+            return "03 Mais de 5 meses na 3CAP"
+        else:
+            return "04 Data da carga"
+    
+    # Para o conjunto geral residual, calculamos o critério e ordenamos
+    res_assigned["Critério"] = res_assigned.apply(calcula_criterio, axis=1)
+    priority_map = {
+        "01 Mais de cinco anos de autuado": 0,
+        "02 A completar 5 anos de autuado": 1,
+        "03 Mais de 5 meses na 3CAP": 2,
+        "04 Data da carga": 3
+    }
+    res_assigned["CustomPriority"] = res_assigned["Critério"].apply(lambda x: priority_map.get(x, 4))
+    res_assigned = res_assigned.sort_values(by=["Informante", "CustomPriority", "Dias no Orgão"],
+                                              ascending=[True, True, False]).reset_index(drop=True)
+    res_assigned = res_assigned.drop(columns=["CustomPriority"])
+    
     # --- Geração das Planilhas Gerais ---
     pre_geral_filename = f"{numero}_planilha_geral_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx"
     pre_geral_bytes = to_excel_bytes(pre_df)
@@ -157,26 +181,10 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     pre_individual_files = {}
     for inf in pre_df["Informante"].dropna().unique():
         df_inf = pre_df[pre_df["Informante"] == inf].copy()
-        def calcula_criterio(row):
-            if pd.isna(row["Processo"]) or row["Processo"] == "":
-                return ""
-            elif row["Tempo TCERJ"] > 1765:
-                return "01 Mais de cinco anos de autuado"
-            elif 1220 < row["Tempo TCERJ"] < 1765:
-                return "02 A completar 5 anos de autuado"
-            elif row["Dias no Orgão"] >= 150:
-                return "03 Mais de 5 meses na 3CAP"
-            else:
-                return "04 Data da carga"
         df_inf["Critério"] = df_inf.apply(calcula_criterio, axis=1)
-        priority_map = {
-            "01 Mais de cinco anos de autuado": 0,
-            "02 A completar 5 anos de autuado": 1,
-            "03 Mais de 5 meses na 3CAP": 2,
-            "04 Data da carga": 3
-        }
         df_inf["CustomPriority"] = df_inf["Critério"].apply(lambda x: priority_map.get(x, 4))
         df_inf = df_inf.sort_values(by=["CustomPriority", "Dias no Orgão"], ascending=[True, False])
+        # Mantemos a coluna "Critério" para exibição
         df_inf = df_inf.drop(columns=["CustomPriority"])
         filename_inf = f"{inf.replace(' ', '_')}_{numero}_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx"
         pre_individual_files[inf] = to_excel_bytes(df_inf)
@@ -185,29 +193,21 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     res_individual_files = {}
     for inf in res_assigned["Informante"].dropna().unique():
         df_inf = res_assigned[res_assigned["Informante"] == inf].copy()
-        def calcula_criterio(row):
-            if pd.isna(row["Processo"]) or row["Processo"] == "":
-                return ""
-            elif row["Tempo TCERJ"] > 1765:
-                return "01 Mais de cinco anos de autuado"
-            elif 1220 < row["Tempo TCERJ"] < 1765:
-                return "02 A completar 5 anos de autuado"
-            elif row["Dias no Orgão"] >= 150:
-                return "03 Mais de 5 meses na 3CAP"
-            else:
-                return "04 Data da carga"
         df_inf["Critério"] = df_inf.apply(calcula_criterio, axis=1)
-        priority_map = {
-            "01 Mais de cinco anos de autuado": 0,
-            "02 A completar 5 anos de autuado": 1,
-            "03 Mais de 5 meses na 3CAP": 2,
-            "04 Data da carga": 3
-        }
         df_inf["CustomPriority"] = df_inf["Critério"].apply(lambda x: priority_map.get(x, 4))
         df_inf = df_inf.sort_values(by=["CustomPriority", "Dias no Orgão"], ascending=[True, False])
         df_inf = df_inf.drop(columns=["CustomPriority"])
         filename_inf = f"{inf.replace(' ', '_')}_{numero}_residual_{datetime.now().strftime('%Y%m%d')}.xlsx"
         res_individual_files[inf] = to_excel_bytes(df_inf)
+    
+    # Reordena a coluna "Critério" para que apareça (por exemplo, na terceira posição) na planilha geral residual
+    cols = res_assigned.columns.tolist()
+    if "Critério" in cols:
+        cols.remove("Critério")
+        cols.insert(2, "Critério")
+        res_assigned = res_assigned[cols]
+        # Recria o arquivo residual com a nova ordem
+        res_geral_bytes = to_excel_bytes(res_assigned)
     
     return (pre_geral_filename, pre_geral_bytes,
             res_geral_filename, res_geral_bytes,
@@ -322,7 +322,7 @@ if st.button("Executar Distribuição"):
                 send_email_with_attachments(managers_list, subject_res, body_res, res_geral_bytes, res_geral_filename)
             
             for inf in set(list(pre_individual_files.keys()) + list(res_individual_files.keys())):
-                # Os nomes dos informantes foram padronizados para maiúsculas no dicionário de e-mails
+                # Padronizamos o nome para maiúsculas para consulta no dicionário de e-mails
                 email_destino = informantes_emails.get(inf.upper(), "")
                 if email_destino:
                     if inf in pre_individual_files:
