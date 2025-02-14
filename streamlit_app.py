@@ -7,7 +7,7 @@ from email.message import EmailMessage
 from xlsxwriter.utility import xl_col_to_name
 
 # =============================================================================
-# Função para envio de e-mail com anexos (usada em modo Produção)
+# Função para envio de e-mail com anexos (modo Produção)
 # =============================================================================
 def send_email_with_attachments(to_emails, subject, body, attachment_bytes, filename):
     smtp_server = 'smtp.gmail.com'
@@ -28,7 +28,7 @@ def send_email_with_attachments(to_emails, subject, body, attachment_bytes, file
     )
     try:
         with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=10) as server:
-            server.set_debuglevel(1)  # ajuste para 0 para menos verbosidade
+            server.set_debuglevel(1)  # ajuste para 0 se preferir menos mensagens
             server.login(smtp_username, smtp_password)
             server.send_message(msg)
             st.info(f"E-mail enviado para: {to_emails}")
@@ -44,7 +44,6 @@ def to_excel_bytes(df):
         df.to_excel(writer, index=False, sheet_name="Planilha")
         workbook = writer.book
         worksheet = writer.sheets["Planilha"]
-        
         # Formatação condicional para a coluna 'Grupo Natureza'
         if "Grupo Natureza" in df.columns:
             col_index = df.columns.get_loc("Grupo Natureza")
@@ -71,19 +70,19 @@ def to_excel_bytes(df):
 # Função que executa a lógica de distribuição
 # =============================================================================
 def run_distribution(processos_file, obs_file, disp_file, numero):
-    # Lê o arquivo de processos e filtra apenas os do tipo "Principal"
+    # Lê o arquivo de processos, removendo espaços e filtrando "Principal"
     df = pd.read_excel(processos_file)
     df.columns = df.columns.str.strip()
     df = df[df["Tipo Processo"] == "Principal"]
     
     # Seleciona as colunas necessárias
     required_cols = [
-        "Processo", "Grupo Natureza", "Orgão Origem", "Dias no Orgão", 
+        "Processo", "Grupo Natureza", "Orgão Origem", "Dias no Orgão",
         "Tempo TCERJ", "Data Última Carga", "Descrição Informação", "Funcionário Informação"
     ]
     df = df[required_cols]
     
-    # Limpa espaços nas colunas "Descrição Informação" e "Funcionário Informação"
+    # Limpa espaços em "Descrição Informação" e "Funcionário Informação"
     df["Descrição Informação"] = df["Descrição Informação"].astype(str).str.strip()
     df["Funcionário Informação"] = df["Funcionário Informação"].astype(str).str.strip()
     
@@ -103,19 +102,17 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     df[["Obs", "Data Obs"]] = df.apply(update_obs, axis=1)
     df = df.drop(columns=["Data Última Carga"])
     
-    # --- Separação dos processos ---
-    # Pré-Atribuídos: aqueles com "Descrição Informação" em ["Em Elaboração", "Concluída"]
-    # E com "Funcionário Informação" não vazio.
-    mask_preassigned = df["Descrição Informação"].isin(["Em Elaboração", "Concluída"]) & (df["Funcionário Informação"].str.strip() != "")
+    # --- Separação dos Processos ---
+    # Pré-Atribuídos: "Descrição Informação" em ["Em Elaboração", "Concluída"] e "Funcionário Informação" não vazio.
+    mask_preassigned = df["Descrição Informação"].isin(["Em Elaboração", "Concluída"]) & (df["Funcionário Informação"] != "")
     pre_df = df[mask_preassigned].copy()
-    pre_df["Informante"] = pre_df["Funcionário Informação"].str.strip()
+    pre_df["Informante"] = pre_df["Funcionário Informação"]
     
-    # Residual: os que têm "Descrição Informação" vazia 
-    # OU aqueles com "Descrição Informação" em ["Em Elaboração", "Concluída"] mas com "Funcionário Informação" vazio.
-    mask_residual = (df["Descrição Informação"].str.strip() == "") | ((df["Descrição Informação"].isin(["Em Elaboração", "Concluída"])) & (df["Funcionário Informação"].str.strip() == ""))
+    # Residual: os que têm "Descrição Informação" vazia.
+    mask_residual = df["Descrição Informação"] == ""
     res_df = df[mask_residual].copy()
     
-    # --- Distribuição dos processos residuais ---
+    # --- Distribuição dos Processos Residual ---
     # Lê o arquivo de disponibilidade e obtém os informantes disponíveis e seus e-mails
     df_disp = pd.read_excel(disp_file)
     df_disp.columns = df_disp.columns.str.strip()
@@ -123,12 +120,11 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     df_disp = df_disp[df_disp["disponibilidade"] == "sim"].copy()
     informantes_emails = dict(zip(df_disp["informantes"], df_disp["email"]))
     
-    # Distribuição: os processos residuais serão distribuídos entre os informantes disponíveis
-    # (Usando as regras já existentes, com base em "Orgão Origem" e "Dias no Orgão")
+    # Distribuição residual: aplica regras de distribuição com base em "Orgão Origem" e "Dias no Orgão"
     informantes_grupo_a = ["ALESSANDRO RIBEIRO RIOS", "ANDRE LUIZ BREIA", "ROSANE CESAR DE CARVALHO SCHLOSSER", "ANNA PAULA CYMERMAN"]
     informantes_grupo_b = ["LUCIA MARIA FELIPE DA SILVA", "MONICA ARANHA GOMES DO NASCIMENTO", "RODRIGO SILVEIRA BARRETO", "JOSÉ CARLOS NUNES"]
-    informantes_grupo_a = [inf for inf in informantes_grupo_a if inf in informantes_emails.keys()]
-    informantes_grupo_b = [inf for inf in informantes_grupo_b if inf in informantes_emails.keys()]
+    informantes_grupo_a = [inf for inf in informantes_grupo_a if inf in informantes_emails]
+    informantes_grupo_b = [inf for inf in informantes_grupo_b if inf in informantes_emails]
     
     origens_especiais = ["SEC EST POLICIA MILITAR", "SEC EST DEFESA CIVIL"]
     df_grupo_a = res_df[res_df["Orgão Origem"].isin(origens_especiais)].copy()
@@ -144,19 +140,19 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     
     res_assigned = pd.concat([df_grupo_a, df_grupo_b], ignore_index=True)
     
-    # --- Geração das planilhas gerais ---
+    # --- Geração das Planilhas Gerais ---
     pre_geral_filename = f"{numero}_planilha_geral_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx"
     pre_geral_bytes = to_excel_bytes(pre_df)
     
     res_geral_filename = f"{numero}_planilha_geral_residual_{datetime.now().strftime('%Y%m%d')}.xlsx"
     res_geral_bytes = to_excel_bytes(res_assigned)
     
-    # --- Geração das planilhas individuais ---
+    # --- Geração das Planilhas Individuais ---
     # Para pré-atribuídos (por informante)
     pre_individual_files = {}
     for inf in pre_df["Informante"].dropna().unique():
         df_inf = pre_df[pre_df["Informante"] == inf].copy()
-        # Calcula critério para ordenação
+        # Ordenação com critério
         def calcula_criterio(row):
             if pd.isna(row["Processo"]) or row["Processo"] == "":
                 return ""
@@ -218,10 +214,10 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
 # Configuração de número (mantido em session_state)
 # =============================================================================
 if "numero" not in st.session_state:
-    st.session_state.numero = 184  # Valor inicial
+    st.session_state.numero = 184
 
 # =============================================================================
-# Interface Gráfica (Streamlit)
+# Interface Gráfica com Streamlit
 # =============================================================================
 st.title("Distribuição de processos da Del. 260 - Interface Gráfica")
 st.markdown("### Faça o upload dos arquivos e configure a distribuição.")
