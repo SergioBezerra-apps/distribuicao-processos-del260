@@ -77,14 +77,14 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     
     # Seleciona as colunas necessárias
     required_cols = [
-        "Processo", "Grupo Natureza", "Orgão Origem", "Dias no Orgão",
+        "Processo", "Grupo Natureza", "Orgão Origem", "Dias no Orgão", 
         "Tempo TCERJ", "Data Última Carga", "Descrição Informação", "Funcionário Informação"
     ]
     df = df[required_cols]
     
     # Normaliza as colunas de interesse:
     # Converte "Descrição Informação" para minúsculas e remove espaços;
-    # "Funcionário Informação" é mantido como string com espaços removidos.
+    # "Funcionário Informação" é mantido com espaços removidos.
     df["Descrição Informação"] = df["Descrição Informação"].astype(str).str.strip().str.lower()
     df["Funcionário Informação"] = df["Funcionário Informação"].astype(str).str.strip()
     
@@ -105,21 +105,23 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     df = df.drop(columns=["Data Última Carga"])
     
     # --- Separação dos Processos ---
-    # Pré-Atribuídos: onde "Descrição Informação" é "em elaboração" ou "concluída" E "Funcionário Informação" não está vazio.
+    # Pré-Atribuídos: processos em que "Descrição Informação" está em ["em elaboração", "concluída"]
+    # E "Funcionário Informação" não está vazio.
     mask_preassigned = df["Descrição Informação"].isin(["em elaboração", "concluída"]) & (df["Funcionário Informação"] != "")
     pre_df = df[mask_preassigned].copy()
     pre_df["Informante"] = pre_df["Funcionário Informação"]
     
-    # Residual: os processos que têm "Descrição Informação" vazia.
-    mask_residual = df["Descrição Informação"] == ""
+    # Residual: Complemento dos pré-atribuídos (todos os processos que não foram pré-atribuídos)
+    mask_residual = ~mask_preassigned
     res_df = df[mask_residual].copy()
     
     # --- Distribuição dos Processos Residual ---
-    # Lê o arquivo de disponibilidade e obtém informantes disponíveis e seus e-mails (convertendo os nomes para maiúsculas)
+    # Lê o arquivo de disponibilidade e obtém informantes disponíveis e seus e-mails
     df_disp = pd.read_excel(disp_file)
     df_disp.columns = df_disp.columns.str.strip()
     df_disp["disponibilidade"] = df_disp["disponibilidade"].str.lower()
     df_disp = df_disp[df_disp["disponibilidade"] == "sim"].copy()
+    # Converte os nomes dos informantes para maiúsculas para padronização
     informantes_emails = dict(zip(df_disp["informantes"].str.upper(), df_disp["email"]))
     
     # Grupos de informantes (em maiúsculas)
@@ -151,7 +153,7 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     res_geral_bytes = to_excel_bytes(res_assigned)
     
     # --- Geração das Planilhas Individuais ---
-    # Para os pré-atribuídos (por informante)
+    # Para pré-atribuídos (por informante)
     pre_individual_files = {}
     for inf in pre_df["Informante"].dropna().unique():
         df_inf = pre_df[pre_df["Informante"] == inf].copy()
@@ -320,6 +322,7 @@ if st.button("Executar Distribuição"):
                 send_email_with_attachments(managers_list, subject_res, body_res, res_geral_bytes, res_geral_filename)
             
             for inf in set(list(pre_individual_files.keys()) + list(res_individual_files.keys())):
+                # Os nomes dos informantes foram padronizados para maiúsculas no dicionário de e-mails
                 email_destino = informantes_emails.get(inf.upper(), "")
                 if email_destino:
                     if inf in pre_individual_files:
