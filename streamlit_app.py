@@ -70,7 +70,7 @@ def to_excel_bytes(df):
 # Função que executa a lógica de distribuição
 # =============================================================================
 def run_distribution(processos_file, obs_file, disp_file, numero):
-    # Lê o arquivo de processos, removendo espaços e filtrando "Principal"
+    # Lê o arquivo de processos e filtra apenas os do tipo "Principal"
     df = pd.read_excel(processos_file)
     df.columns = df.columns.str.strip()
     df = df[df["Tipo Processo"] == "Principal"]
@@ -82,8 +82,10 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     ]
     df = df[required_cols]
     
-    # Limpa espaços em "Descrição Informação" e "Funcionário Informação"
-    df["Descrição Informação"] = df["Descrição Informação"].astype(str).str.strip()
+    # Normaliza as colunas de interesse:
+    # Converte "Descrição Informação" para minúsculas e remove espaços;
+    # "Funcionário Informação" é mantido como string com espaços removidos.
+    df["Descrição Informação"] = df["Descrição Informação"].astype(str).str.strip().str.lower()
     df["Funcionário Informação"] = df["Funcionário Informação"].astype(str).str.strip()
     
     # Merge com o arquivo de observações
@@ -103,29 +105,30 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     df = df.drop(columns=["Data Última Carga"])
     
     # --- Separação dos Processos ---
-    # Pré-Atribuídos: "Descrição Informação" em ["Em Elaboração", "Concluída"] e "Funcionário Informação" não vazio.
-    mask_preassigned = df["Descrição Informação"].isin(["Em Elaboração", "Concluída"]) & (df["Funcionário Informação"] != "")
+    # Pré-Atribuídos: onde "Descrição Informação" é "em elaboração" ou "concluída" E "Funcionário Informação" não está vazio.
+    mask_preassigned = df["Descrição Informação"].isin(["em elaboração", "concluída"]) & (df["Funcionário Informação"] != "")
     pre_df = df[mask_preassigned].copy()
     pre_df["Informante"] = pre_df["Funcionário Informação"]
     
-    # Residual: os que têm "Descrição Informação" vazia.
+    # Residual: os processos que têm "Descrição Informação" vazia.
     mask_residual = df["Descrição Informação"] == ""
     res_df = df[mask_residual].copy()
     
     # --- Distribuição dos Processos Residual ---
-    # Lê o arquivo de disponibilidade e obtém os informantes disponíveis e seus e-mails
+    # Lê o arquivo de disponibilidade e obtém informantes disponíveis e seus e-mails (convertendo os nomes para maiúsculas)
     df_disp = pd.read_excel(disp_file)
     df_disp.columns = df_disp.columns.str.strip()
     df_disp["disponibilidade"] = df_disp["disponibilidade"].str.lower()
     df_disp = df_disp[df_disp["disponibilidade"] == "sim"].copy()
-    informantes_emails = dict(zip(df_disp["informantes"], df_disp["email"]))
+    informantes_emails = dict(zip(df_disp["informantes"].str.upper(), df_disp["email"]))
     
-    # Distribuição residual: aplica regras de distribuição com base em "Orgão Origem" e "Dias no Orgão"
+    # Grupos de informantes (em maiúsculas)
     informantes_grupo_a = ["ALESSANDRO RIBEIRO RIOS", "ANDRE LUIZ BREIA", "ROSANE CESAR DE CARVALHO SCHLOSSER", "ANNA PAULA CYMERMAN"]
     informantes_grupo_b = ["LUCIA MARIA FELIPE DA SILVA", "MONICA ARANHA GOMES DO NASCIMENTO", "RODRIGO SILVEIRA BARRETO", "JOSÉ CARLOS NUNES"]
     informantes_grupo_a = [inf for inf in informantes_grupo_a if inf in informantes_emails]
     informantes_grupo_b = [inf for inf in informantes_grupo_b if inf in informantes_emails]
     
+    # Separa os processos residuais em dois grupos com base no "Orgão Origem"
     origens_especiais = ["SEC EST POLICIA MILITAR", "SEC EST DEFESA CIVIL"]
     df_grupo_a = res_df[res_df["Orgão Origem"].isin(origens_especiais)].copy()
     df_grupo_b = res_df[~res_df["Orgão Origem"].isin(origens_especiais)].copy()
@@ -148,11 +151,10 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     res_geral_bytes = to_excel_bytes(res_assigned)
     
     # --- Geração das Planilhas Individuais ---
-    # Para pré-atribuídos (por informante)
+    # Para os pré-atribuídos (por informante)
     pre_individual_files = {}
     for inf in pre_df["Informante"].dropna().unique():
         df_inf = pre_df[pre_df["Informante"] == inf].copy()
-        # Ordenação com critério
         def calcula_criterio(row):
             if pd.isna(row["Processo"]) or row["Processo"] == "":
                 return ""
@@ -217,7 +219,7 @@ if "numero" not in st.session_state:
     st.session_state.numero = 184
 
 # =============================================================================
-# Interface Gráfica com Streamlit
+# Interface Gráfica (Streamlit)
 # =============================================================================
 st.title("Distribuição de processos da Del. 260 - Interface Gráfica")
 st.markdown("### Faça o upload dos arquivos e configure a distribuição.")
@@ -318,7 +320,7 @@ if st.button("Executar Distribuição"):
                 send_email_with_attachments(managers_list, subject_res, body_res, res_geral_bytes, res_geral_filename)
             
             for inf in set(list(pre_individual_files.keys()) + list(res_individual_files.keys())):
-                email_destino = informantes_emails.get(inf, "")
+                email_destino = informantes_emails.get(inf.upper(), "")
                 if email_destino:
                     if inf in pre_individual_files:
                         subject_inf = f"Distribuição de Processos - {inf} (Pré-Atribuído)"
