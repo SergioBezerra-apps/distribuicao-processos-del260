@@ -29,9 +29,9 @@ def send_email_with_attachments(to_emails, subject, body, attachment_bytes, file
             server.set_debuglevel(1)
             server.login(smtp_username, smtp_password)
             server.send_message(msg)
-            st.info("E-mail com anexos enviado com sucesso!")
+            st.info(f"E-mail enviado para {to_emails}")
     except Exception as e:
-        st.error(f"Erro ao enviar e-mail: {e}")
+        st.error(f"Erro ao enviar e-mail para {to_emails}: {e}")
 
 # =============================================================================
 # Função para converter um DataFrame em bytes (para download) com formatação condicional
@@ -68,7 +68,7 @@ def to_excel_bytes(df):
 # =============================================================================
 # Função que executa a lógica de distribuição
 # =============================================================================
-def run_distribution(processos_file, obs_file, disp_file, numero, test_mode=True):
+def run_distribution(processos_file, obs_file, disp_file, numero):
     # Lê o arquivo de processos
     df = pd.read_excel(processos_file)
     df.columns = df.columns.str.strip()
@@ -173,7 +173,7 @@ def run_distribution(processos_file, obs_file, disp_file, numero, test_mode=True
                                     ascending=[True, True, False]).reset_index(drop=True)
     df_final = df_final.drop(columns=["CustomPriority"])
     
-    # O arquivo final manterá todas as colunas, inclusive "Descrição Informação"
+    # Gera a planilha geral
     geral_filename = f"{numero}_planilha_geral_processos_{datetime.now().strftime('%Y%m%d')}.xlsx"
     geral_bytes = to_excel_bytes(df_final)
     
@@ -200,7 +200,7 @@ if "numero" not in st.session_state:
 # =============================================================================
 # Interface Gráfica (Streamlit)
 # =============================================================================
-st.title("Distribuição de Processos - Interface Gráfica")
+st.title("Distribuição de processos da Del. 260 - Interface Gráfica")
 st.markdown("### Faça o upload dos arquivos e configure a distribuição.")
 
 # Upload dos arquivos – agora apenas um botão para os três arquivos necessários
@@ -222,6 +222,36 @@ if uploaded_files:
         elif fname == "disponibilidade_equipe.xlsx":
             files_dict["disponibilidade"] = file
 
+# Campo para numeração – o valor inicial vem de session_state
+numero = st.number_input("Qual a numeração dessa planilha de distribuição?", value=st.session_state.numero, step=1)
+
+# Controle de modo: Teste ou Produção
+modo = st.radio("Selecione o modo:", options=["Teste", "Produção"])
+test_mode = (modo == "Teste")
+if test_mode:
+    st.info("Modo Teste: Nenhum e-mail será enviado; apenas a visualização e download dos arquivos serão disponibilizados.")
+else:
+    st.info("Modo Produção: Os e-mails serão enviados para os informantes e gestores.")
+
+st.markdown(f"**Modo selecionado:** {modo}")
+
+# Editor de e-mails dos informantes (permitindo edição)
+default_emails = pd.DataFrame({
+    "Informante": ["Alessandro Rios", "André", "Rosane", "Anna Cymerman", 
+                    "Lúcia", "Mônica Aranha", "Rodrigo", "Wellington", "Zezinho"],
+    "Email": ["alessandrorr@tcerj.tc.br", "andrelbr@tcerj.tc.br", "rosanec@tcerj.tc.br", "anna.cymerman@exemplo.com",
+              "luciamfs@tcerj.tc.br", "monicaag@tcerj.tc.br", "rodrigob@tcerj.tc.br", "wellinsc@tcerj.tc.br", "josecn@tcerj.tc.br"]
+})
+st.markdown("### E-mails dos Informantes (pode editar)")
+edited_emails = st.experimental_data_editor(default_emails, num_rows="dynamic", key="emails_editor")
+emails_informantes = dict(zip(edited_emails["Informante"], edited_emails["Email"]))
+
+# Campo para e-mails dos gestores/revisores (separados por vírgula)
+managers_emails = st.text_input(
+    "E-mails dos gestores/revisores (separados por vírgula):", 
+    value="sergiolblj@tcerj.tc.br, sergiollima2@hotmail.com"
+)
+
 if st.button("Executar Distribuição"):
     required_keys = ["processos", "observacoes", "disponibilidade"]
     if all(key in files_dict for key in required_keys):
@@ -229,50 +259,35 @@ if st.button("Executar Distribuição"):
         obs_file = files_dict["observacoes"]
         disp_file = files_dict["disponibilidade"]
 
-        # Campo para numeração – o valor inicial vem de session_state
-        numero = st.number_input("Qual a numeração dessa planilha de distribuição?", value=st.session_state.numero, step=1)
-
-        # Controle de modo: Teste ou Produção
-        modo = st.radio("Selecione o modo:", options=["Teste", "Produção"])
-        test_mode = (modo == "Teste")
-        st.markdown(f"**Modo selecionado:** {modo}")
-
-        # Editor de e-mails dos informantes (permitindo edição)
-        default_emails = pd.DataFrame({
-            "Informante": ["Alessandro Rios", "André", "Rosane", "Anna Cymerman", 
-                            "Lúcia", "Mônica Aranha", "Rodrigo", "Wellington", "Zezinho"],
-            "Email": ["alessandrorr@tcerj.tc.br", "andrelbr@tcerj.tc.br", "rosanec@tcerj.tc.br", "anna.cymerman@exemplo.com",
-                      "luciamfs@tcerj.tc.br", "monicaag@tcerj.tc.br", "rodrigob@tcerj.tc.br", "wellinsc@tcerj.tc.br", "josecn@tcerj.tc.br"]
-        })
-        st.markdown("### E-mails dos Informantes (pode editar)")
-        edited_emails = st.experimental_data_editor(default_emails, num_rows="dynamic", key="emails_editor")
-        emails_informantes = dict(zip(edited_emails["Informante"], edited_emails["Email"]))
-
-        # Campo para e-mails dos gestores/revisores (separados por vírgula)
-        managers_emails = st.text_input("E-mails dos gestores/revisores (separados por vírgula):", 
-                                        value="sergiolblj@tcerj.tc.br, sergiollima2@hotmail.com")
-
         # Executa a distribuição
         geral_filename, geral_bytes, individual_files = run_distribution(
-            processos_file, obs_file, disp_file, numero, test_mode
+            processos_file, obs_file, disp_file, numero
         )
         st.success("Distribuição executada com sucesso!")
         
         # Disponibiliza o download da planilha geral
-        st.download_button("Baixar Planilha Geral", data=geral_bytes, file_name=geral_filename,
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.download_button(
+            "Baixar Planilha Geral", 
+            data=geral_bytes, 
+            file_name=geral_filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
         
         st.markdown("### Planilhas Individuais")
         for informante, file_bytes in individual_files.items():
             filename = f"{informante.replace(' ', '_')}_{numero}_processos_{datetime.now().strftime('%Y%m%d')}.xlsx"
-            st.download_button(f"Baixar para {informante}", data=file_bytes, file_name=filename,
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.download_button(
+                f"Baixar para {informante}", 
+                data=file_bytes, 
+                file_name=filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
         
         # Envio de e-mails:
-        # Em modo Teste, envia apenas para os gestores; em Produção, também para os informantes.
         if test_mode:
-            st.info("Modo Teste: E-mails para informantes NÃO serão enviados; apenas os e-mails dos gestores serão enviados.")
+            st.info("Modo Teste: Nenhum e-mail foi enviado.")
         else:
+            # Modo Produção: envia e-mail aos informantes e aos gestores
             for informante, file_bytes in individual_files.items():
                 arquivo_informante = f"{informante.replace(' ', '_')}_{numero}_processos_{datetime.now().strftime('%Y%m%d')}.xlsx"
                 email_destino = emails_informantes.get(informante, "")
@@ -282,12 +297,12 @@ if st.button("Executar Distribuição"):
                     send_email_with_attachments([email_destino], subject, body, file_bytes, arquivo_informante)
                 else:
                     st.write(f"E-mail não encontrado para {informante}")
-        
-        # Envia a planilha geral para os gestores/revisores (sempre enviar)
-        managers_list = [e.strip() for e in managers_emails.split(",") if e.strip()]
-        subject_geral = "Planilha Geral de Processos Distribuídos"
-        body_geral = "Segue em anexo a planilha geral com todos os processos distribuídos."
-        send_email_with_attachments(managers_list, subject_geral, body_geral, geral_bytes, geral_filename)
+            
+            # Envia a planilha geral para os gestores/revisores (sempre enviar)
+            managers_list = [e.strip() for e in managers_emails.split(",") if e.strip()]
+            subject_geral = "Planilha Geral de Processos Distribuídos"
+            body_geral = "Segue em anexo a planilha geral com todos os processos distribuídos."
+            send_email_with_attachments(managers_list, subject_geral, body_geral, geral_bytes, geral_filename)
         
         # Atualiza a numeração para a próxima execução
         st.session_state.numero = numero + 1
