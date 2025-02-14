@@ -152,7 +152,7 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     # Para os processos restantes, aplica a lógica de distribuição
     # Identifica informantes disponíveis e separa em grupos
     informantes_grupo_a = ["ALESSANDRO RIBEIRO RIOS", "ANDRE LUIZ BREIA", "ROSANE CESAR DE CARVALHO", "ANNA PAULA CYMERMAN"]
-    informantes_grupo_b = ["LUCIA MARIA FELIPE DA SILVA", "MONICA ARANHA GOMES DO NASCIMENTO", "RODRIGO SILVEIRA BARRETO", "JOSE CARLOS NUNES"]
+    informantes_grupo_b = ["LUCIA MARIA FELIPE DA SILVA", "MONICA ARANHA GOMES DO NASCIMENTO", "RODRIGO SILVEIRA BARRETO", "JOSÉ CARLOS NUNES"]
     
     informantes_grupo_a = [inf for inf in informantes_grupo_a if inf in informantes_emails.keys()]
     informantes_grupo_b = [inf for inf in informantes_grupo_b if inf in informantes_emails.keys()]
