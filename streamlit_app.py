@@ -12,8 +12,8 @@ from xlsxwriter.utility import xl_col_to_name
 def send_email_with_attachments(to_emails, subject, body, attachment_bytes, filename):
     smtp_server = 'smtp.gmail.com'
     smtp_port = 465
-    smtp_username = 'seuemail@gmail.com'       # <-- Ajuste aqui
-    smtp_password = 'senhadeaplicativo'        # <-- Ajuste aqui (senha de aplicativo do Gmail)
+    smtp_username = 'seuemail@gmail.com'       # <-- Ajuste seu e-mail
+    smtp_password = 'senhadeaplicativo'          # <-- Ajuste sua senha de aplicativo
 
     msg = EmailMessage()
     msg['Subject'] = subject
@@ -28,7 +28,7 @@ def send_email_with_attachments(to_emails, subject, body, attachment_bytes, file
     )
     try:
         with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=10) as server:
-            server.set_debuglevel(1)  # se quiser menos verbosidade, coloque 0
+            server.set_debuglevel(1)  # ajuste para menos verbosidade se desejar
             server.login(smtp_username, smtp_password)
             server.send_message(msg)
             st.info(f"E-mail enviado para: {to_emails}")
@@ -52,16 +52,13 @@ def to_excel_bytes(df):
             last_row = len(df) + 1  # Cabeçalho na linha 1; dados a partir da linha 2
             cell_range = f'{col_letter}2:{col_letter}{last_row}'
             
-            # Lista de cores pré-definidas (será utilizada ciclicamente)
+            # Lista de cores pré-definidas (cíclica)
             color_list = [
                 "#FFC7CE", "#C6EFCE", "#FFEB9C", "#9CC3E6",
                 "#D9D2E9", "#FCE4D6", "#D0E0E3", "#E2EFDA"
             ]
             unique_values = df["Grupo Natureza"].dropna().unique()
-            color_mapping = {
-                val: color_list[i % len(color_list)]
-                for i, val in enumerate(unique_values)
-            }
+            color_mapping = {val: color_list[i % len(color_list)] for i, val in enumerate(unique_values)}
             
             for value, color in color_mapping.items():
                 fmt = workbook.add_format({'bg_color': color, 'font_color': '#000000'})
@@ -91,23 +88,19 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     ]
     df = df[required_cols]
     
-    # Lê o arquivo de disponibilidade, obtém informantes disponíveis e e-mails
+    # Lê o arquivo de disponibilidade, obtém informantes disponíveis e seus e-mails
     df_disp = pd.read_excel(disp_file)
     df_disp.columns = df_disp.columns.str.strip()
     df_disp["disponibilidade"] = df_disp["disponibilidade"].str.lower()
-    # Filtra apenas quem tem disponibilidade == "sim"
     df_disp = df_disp[df_disp["disponibilidade"] == "sim"].copy()
     
-    # Espera-se que o arquivo tenha uma coluna 'email'
-    # Cria um dicionário: { nome_informante: email_informante }
+    # Cria um dicionário: {nome_informante: email_informante}
     informantes_emails = dict(zip(df_disp["informantes"], df_disp["email"]))
     
     # Pré-atribuição: para processos com "Descrição Informação" igual a "Em Elaboração" ou "Concluída",
-    # atribui o informante indicado em "Funcionário Informação" se este estiver disponível.
+    # vincula o processo ao informante presente em "Funcionário Informação" (sem condição adicional)
     mask_preassigned = df["Descrição Informação"].isin(["Em Elaboração", "Concluída"])
-    df.loc[mask_preassigned, "Informante"] = df.loc[mask_preassigned, "Funcionário Informação"].where(
-        df.loc[mask_preassigned, "Funcionário Informação"].isin(informantes_emails.keys()), ""
-    )
+    df.loc[mask_preassigned, "Informante"] = df.loc[mask_preassigned, "Funcionário Informação"]
     
     # Lê o arquivo de observações
     df_obs = pd.read_excel(obs_file)
@@ -120,7 +113,7 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     df["Data Última Carga"] = pd.to_datetime(df["Data Última Carga"], errors="coerce")
     df["Data Obs"] = pd.to_datetime(df["Data Obs"], errors="coerce")
     
-    # Atualiza Obs e Data Obs: se "Data Obs" for mais recente que "Data Última Carga", mantém os valores; caso contrário, zera ambos.
+    # Atualiza Obs e Data Obs
     def update_obs(row):
         if pd.notna(row["Data Obs"]) and pd.notna(row["Data Última Carga"]) and row["Data Obs"] > row["Data Última Carga"]:
             return pd.Series([row["Obs"], row["Data Obs"]])
@@ -145,13 +138,12 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
             return "04 Data da carga"
     df["Critério"] = df.apply(calcula_criterio, axis=1)
     
-    # Separa os processos que já possuem informante pré-atribuído dos que precisam de distribuição
+    # Separa os processos pré-atribuídos (com Informante definido) dos demais
     df_preassigned = df[df["Informante"].notna() & (df["Informante"] != "")].copy()
     df_remaining = df[df["Informante"].isna() | (df["Informante"] == "")].copy()
     
-    # Para os processos restantes, aplica a lógica de distribuição
-    # Identifica informantes disponíveis e separa em grupos
-    informantes_grupo_a = ["ALESSANDRO RIBEIRO RIOS", "ANDRE LUIZ BREIA", "ROSANE CESAR DE CARVALHO", "ANNA PAULA CYMERMAN"]
+    # Para os processos restantes, aplica a lógica de distribuição (grupos A e B)
+    informantes_grupo_a = ["ALESSANDRO RIBEIRO RIOS", "ANDRE LUIZ BREIA", "ROSANE CESAR DE CARVALHO SCHLOSSER", "ANNA PAULA CYMERMAN"]
     informantes_grupo_b = ["LUCIA MARIA FELIPE DA SILVA", "MONICA ARANHA GOMES DO NASCIMENTO", "RODRIGO SILVEIRA BARRETO", "JOSÉ CARLOS NUNES"]
     
     informantes_grupo_a = [inf for inf in informantes_grupo_a if inf in informantes_emails.keys()]
@@ -164,24 +156,17 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     df_grupo_a_data = df_grupo_a_data.sort_values(by="Dias no Orgão", ascending=False).reset_index(drop=True)
     df_grupo_b_data = df_grupo_b_data.sort_values(by="Dias no Orgão", ascending=False).reset_index(drop=True)
     
-    # Distribuição cíclica
     if informantes_grupo_a:
-        df_grupo_a_data["Informante"] = [
-            informantes_grupo_a[i % len(informantes_grupo_a)]
-            for i in range(len(df_grupo_a_data))
-        ]
+        df_grupo_a_data["Informante"] = [informantes_grupo_a[i % len(informantes_grupo_a)] for i in range(len(df_grupo_a_data))]
     if informantes_grupo_b:
-        df_grupo_b_data["Informante"] = [
-            informantes_grupo_b[i % len(informantes_grupo_b)]
-            for i in range(len(df_grupo_b_data))
-        ]
+        df_grupo_b_data["Informante"] = [informantes_grupo_b[i % len(informantes_grupo_b)] for i in range(len(df_grupo_b_data))]
     
     df_assigned = pd.concat([df_grupo_a_data, df_grupo_b_data], ignore_index=True)
     
-    # Combina os processos pré-atribuídos e os que receberam distribuição
+    # Combina os processos pré-atribuídos com os distribuídos
     df_final = pd.concat([df_preassigned, df_assigned], ignore_index=True)
     
-    # Ordena o DataFrame final por informante, Critério e "Dias no Orgão"
+    # Ordena o DataFrame final por Informante, Critério e Dias no Orgão
     priority_map = {
         "01 Mais de cinco anos de autuado": 0,
         "02 A completar 5 anos de autuado": 1,
@@ -189,17 +174,15 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
         "04 Data da carga": 3
     }
     df_final["CustomPriority"] = df_final["Critério"].apply(lambda x: priority_map.get(x, 4))
-    df_final = df_final.sort_values(
-        by=["Informante", "CustomPriority", "Dias no Orgão"],
-        ascending=[True, True, False]
-    ).reset_index(drop=True)
+    df_final = df_final.sort_values(by=["Informante", "CustomPriority", "Dias no Orgão"],
+                                    ascending=[True, True, False]).reset_index(drop=True)
     df_final = df_final.drop(columns=["CustomPriority"])
     
     # Gera a planilha geral
     geral_filename = f"{numero}_planilha_geral_processos_{datetime.now().strftime('%Y%m%d')}.xlsx"
     geral_bytes = to_excel_bytes(df_final)
     
-    # Gera as planilhas individuais para cada informante (limite de 200 processos)
+    # Gera as planilhas individuais (limite de 200 processos por informante)
     individual_files = {}
     informantes_list = df_final["Informante"].dropna().unique()
     for inf in informantes_list:
@@ -211,7 +194,6 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
         filename_inf = f"{inf.replace(' ', '_')}_{numero}_processos_{datetime.now().strftime('%Y%m%d')}.xlsx"
         individual_files[inf] = to_excel_bytes(df_inf)
     
-    # Retorna também o dicionário com os e-mails para posterior envio
     return geral_filename, geral_bytes, individual_files, informantes_emails
 
 # =============================================================================
@@ -223,7 +205,7 @@ if "numero" not in st.session_state:
 # =============================================================================
 # Interface Gráfica (Streamlit)
 # =============================================================================
-st.title("Distribuição de processos da Del. 260 - Interface Gráfica")
+st.title("Distribuição de processos da Del. 260")
 st.markdown("### Faça o upload dos arquivos e configure a distribuição.")
 
 # Upload dos arquivos – apenas um botão para os três arquivos necessários
@@ -257,7 +239,7 @@ modo = st.radio("Selecione o modo:", options=["Teste", "Produção"])
 test_mode = (modo == "Teste")
 
 if test_mode:
-    st.info("Modo Teste: Nenhum e-mail será enviado; apenas as planilhas serão disponibilizadas para download.")
+    st.info("Modo Teste: Nenhum e-mail será enviado; as planilhas serão disponibilizadas para download.")
 else:
     st.info("Modo Produção: Envia e-mails para gestores (planilha geral) e para informantes (planilhas individuais).")
 
@@ -277,16 +259,11 @@ if st.button("Executar Distribuição"):
         disp_file = files_dict["disponibilidade"]
 
         # Executa a distribuição
-        (
-            geral_filename,
-            geral_bytes,
-            individual_files,
-            informantes_emails
-        ) = run_distribution(processos_file, obs_file, disp_file, numero)
+        geral_filename, geral_bytes, individual_files, informantes_emails = run_distribution(processos_file, obs_file, disp_file, numero)
 
         st.success("Distribuição executada com sucesso!")
         
-        # --- Exibe o botão de download da planilha geral
+        # Exibe o botão de download da planilha geral
         st.download_button(
             "Baixar Planilha Geral", 
             data=geral_bytes, 
@@ -294,7 +271,7 @@ if st.button("Executar Distribuição"):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        # --- Exibe botões de download para as planilhas individuais
+        # Exibe os botões de download para as planilhas individuais
         st.markdown("### Planilhas Individuais")
         for inf, file_bytes in individual_files.items():
             filename_inf = f"{inf.replace(' ', '_')}_{numero}_processos_{datetime.now().strftime('%Y%m%d')}.xlsx"
@@ -309,7 +286,6 @@ if st.button("Executar Distribuição"):
         if test_mode:
             st.info("Modo Teste: Nenhum e-mail foi enviado.")
         else:
-            # Modo Produção:
             # 1) Envia a planilha geral para os gestores
             managers_list = [e.strip() for e in managers_emails.split(",") if e.strip()]
             if managers_list:
@@ -317,7 +293,7 @@ if st.button("Executar Distribuição"):
                 body_geral = "Segue em anexo a planilha geral com todos os processos distribuídos."
                 send_email_with_attachments(managers_list, subject_geral, body_geral, geral_bytes, geral_filename)
             
-            # 2) Envia as planilhas individuais para cada informante (usando o dicionário informantes_emails)
+            # 2) Envia as planilhas individuais para cada informante
             for inf, file_bytes in individual_files.items():
                 email_destino = informantes_emails.get(inf, "")
                 if email_destino:
