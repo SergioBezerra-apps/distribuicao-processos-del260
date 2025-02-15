@@ -326,7 +326,6 @@ managers_emails = st.text_input(
     value="annapc@tcerj.tc.br, fabiovf@tcerj.tc.br, sergiolblj@tcerj.tc.br, sergiollima2@hotmail.com"
 )
 
-
 if st.button("Executar Distribuição"):
     required_keys = ["processos", "observacoes", "disponibilidade"]
     if all(key in files_dict for key in required_keys):
@@ -376,16 +375,15 @@ if st.button("Executar Distribuição"):
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         
+        # Envio de e-mails apenas se não estivermos em modo teste
         if not test_mode:
             managers_list = [e.strip() for e in managers_emails.split(",") if e.strip()]
             if managers_list:
                 # Compacta todas as planilhas individuais em um arquivo ZIP
                 all_individual_files = {}
-                # Inclui as planilhas pré-atribuídas
                 for inf, file_bytes in pre_individual_files.items():
                     filename_ind = f"{inf.replace(' ', '_')}_{numero}_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx"
                     all_individual_files[filename_ind] = file_bytes
-                # Inclui as planilhas principais
                 for inf, file_bytes in res_individual_files.items():
                     filename_ind = f"{inf.replace(' ', '_')}_{numero}_principal_{datetime.now().strftime('%Y%m%d')}.xlsx"
                     all_individual_files[filename_ind] = file_bytes
@@ -393,7 +391,6 @@ if st.button("Executar Distribuição"):
                 zip_individual_bytes = create_zip_from_dict(all_individual_files)
                 zip_filename = f"{numero}_planilhas_individuais_{datetime.now().strftime('%Y%m%d')}.zip"
                 
-                # Cria uma lista com os três anexos: as duas planilhas gerais e o ZIP das individuais
                 attachments = [
                     (pre_geral_bytes, pre_geral_filename),
                     (res_geral_bytes, res_geral_filename),
@@ -411,29 +408,30 @@ if st.button("Executar Distribuição"):
                     "[Equipe de Distribuição de Processos]"
                 )
                 send_email_with_multiple_attachments(managers_list, subject_managers, body_managers, attachments)
-        
-        # Envio de e-mails individuais para informantes
-        for inf in set(list(pre_individual_files.keys()) + list(res_individual_files.keys())):
-            email_destino = informantes_emails.get(inf.upper(), "")
-            if email_destino:
-                attachment_pre = pre_individual_files.get(inf)
-                attachment_res = res_individual_files.get(inf)
-                filename_pre = f"{inf.replace(' ', '_')}_{numero}_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx" if attachment_pre else None
-                filename_res = f"{inf.replace(' ', '_')}_{numero}_principal_{datetime.now().strftime('%Y%m%d')}.xlsx" if attachment_res else None
-                subject_inf = f"Distribuição de Processos - {inf}"
-                body_inf = (
-                    "Prezado(a) Informante,\n\n"
-                    "Segue em anexo as planilhas referentes à distribuição de processos:\n\n"
-                    "Processos Pré-Atribuídos:\n"
-                    "Estes são os processos que já estavam vinculados a você antes da distribuição, "
-                    "ou seja, os que já estavam com instrução processual em andamento ou concluída no sistema.\n\n"
-                    "Processos Principais:\n"
-                    "São os novos processos distribuídos entre os informantes disponíveis.\n\n"
-                    "Caso tenha dúvidas, entre em contato.\n\n"
-                    "Atenciosamente,\n"
-                    "[Equipe de Distribuição de Processos]"
-                )
-                send_email_with_two_attachments(email_destino, subject_inf, body_inf, attachment_pre, filename_pre, attachment_res, filename_res)
+            
+            # Envio de e-mails individuais para os informantes, somente se o modo de envio permitir
+            if modo_envio == "Produção - Gestores e Informantes":
+                for inf in set(list(pre_individual_files.keys()) + list(res_individual_files.keys())):
+                    email_destino = informantes_emails.get(inf.upper(), "")
+                    if email_destino:
+                        attachment_pre = pre_individual_files.get(inf)
+                        attachment_res = res_individual_files.get(inf)
+                        filename_pre = f"{inf.replace(' ', '_')}_{numero}_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx" if attachment_pre else None
+                        filename_res = f"{inf.replace(' ', '_')}_{numero}_principal_{datetime.now().strftime('%Y%m%d')}.xlsx" if attachment_res else None
+                        subject_inf = f"Distribuição de Processos - {inf}"
+                        body_inf = (
+                            "Prezado(a) Informante,\n\n"
+                            "Segue em anexo as planilhas referentes à distribuição de processos:\n\n"
+                            "Processos Pré-Atribuídos:\n"
+                            "Estes são os processos que já estavam vinculados a você antes da distribuição, "
+                            "ou seja, os que já estavam com instrução processual em andamento ou concluída no sistema.\n\n"
+                            "Processos Principais:\n"
+                            "São os novos processos distribuídos entre os informantes disponíveis.\n\n"
+                            "Caso tenha dúvidas, entre em contato.\n\n"
+                            "Atenciosamente,\n"
+                            "[Equipe de Distribuição de Processos]"
+                        )
+                        send_email_with_two_attachments(email_destino, subject_inf, body_inf, attachment_pre, filename_pre, attachment_res, filename_res)
         
         st.session_state.numero = numero + 1
     else:
