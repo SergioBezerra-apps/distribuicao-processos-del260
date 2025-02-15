@@ -305,18 +305,27 @@ numero = st.number_input(
     step=1
 )
 
+# Seleção do modo geral: Teste ou Produção
 modo = st.radio("Selecione o modo:", options=["Teste", "Produção"])
 test_mode = (modo == "Teste")
 if test_mode:
     st.info("Modo Teste: Nenhum e-mail será enviado; as planilhas serão disponibilizadas para download.")
 else:
-    st.info("Modo Produção: Serão enviados e-mails para gestores e informantes.")
+    st.info("Modo Produção: Os e-mails serão enviados conforme o modo de envio selecionado.")
 st.markdown(f"**Modo selecionado:** {modo}")
 
+# Se estiver em modo Produção, pergunta se o envio será para Gestores e Informantes ou Apenas Gestores
+modo_envio = None
+if not test_mode:
+    modo_envio = st.radio("Selecione o modo de envio:", options=["Produção - Gestores e Informantes", "Produção - Apenas Gestores"])
+    st.markdown(f"**Modo de envio selecionado:** {modo_envio}")
+
+# Entrada dos e-mails dos gestores
 managers_emails = st.text_input(
     "E-mails dos gestores/revisores (separados por vírgula):", 
     value="annapc@tcerj.tc.br, fabiovf@tcerj.tc.br, sergiolblj@tcerj.tc.br, sergiollima2@hotmail.com"
 )
+
 
 if st.button("Executar Distribuição"):
     required_keys = ["processos", "observacoes", "disponibilidade"]
