@@ -12,8 +12,8 @@ from xlsxwriter.utility import xl_col_to_name
 def send_email_with_attachments(to_emails, subject, body, attachment_bytes, filename):
     smtp_server = 'smtp.gmail.com'
     smtp_port = 465
-    smtp_username = 'seuemail@gmail.com'       # <-- Substitua pelo seu e-mail
-    smtp_password = 'senhadeaplicativo'          # <-- Substitua pela sua senha de aplicativo
+    smtp_username = 'sergiolbezerralj@gmail.com'
+    smtp_password = 'dimwpnhowxxeqbes'
 
     msg = EmailMessage()
     msg['Subject'] = subject
@@ -57,7 +57,8 @@ def to_excel_bytes(df):
             unique_values = df["Grupo Natureza"].dropna().unique()
             color_mapping = {val: color_list[i % len(color_list)] for i, val in enumerate(unique_values)}
             for value, color in color_mapping.items():
-                fmt = workbook.add_format({'bg_color': color, 'font_color': '#000000'})
+                # Aplica a cor no texto e formata em negrito
+                fmt = workbook.add_format({'font_color': color, 'bold': True})
                 worksheet.conditional_format(cell_range, {
                     'type': 'cell',
                     'criteria': '==',
@@ -173,8 +174,8 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     pre_geral_filename = f"{numero}_planilha_geral_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx"
     pre_geral_bytes = to_excel_bytes(pre_df)
     
-    res_geral_filename = f"{numero}_planilha_geral_residual_{datetime.now().strftime('%Y%m%d')}.xlsx"
-    res_geral_bytes = to_excel_bytes(res_assigned)
+    # Altera o nome para "principal" e remove as colunas indesejadas (somente para processos residuais/principais)
+    res_geral_filename = f"{numero}_planilha_geral_principal_{datetime.now().strftime('%Y%m%d')}.xlsx"
     
     # --- Geração das Planilhas Individuais ---
     # Para pré-atribuídos (por informante)
@@ -184,7 +185,6 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
         df_inf["Critério"] = df_inf.apply(calcula_criterio, axis=1)
         df_inf["CustomPriority"] = df_inf["Critério"].apply(lambda x: priority_map.get(x, 4))
         df_inf = df_inf.sort_values(by=["CustomPriority", "Dias no Orgão"], ascending=[True, False])
-        # Mantemos a coluna "Critério" para exibição
         df_inf = df_inf.drop(columns=["CustomPriority"])
         filename_inf = f"{inf.replace(' ', '_')}_{numero}_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx"
         pre_individual_files[inf] = to_excel_bytes(df_inf)
@@ -193,20 +193,24 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     res_individual_files = {}
     for inf in res_assigned["Informante"].dropna().unique():
         df_inf = res_assigned[res_assigned["Informante"] == inf].copy()
+        # Remove as colunas "Descrição Informação" e "Funcionário Informação"
+        df_inf = df_inf.drop(columns=["Descrição Informação", "Funcionário Informação"], errors='ignore')
         df_inf["Critério"] = df_inf.apply(calcula_criterio, axis=1)
         df_inf["CustomPriority"] = df_inf["Critério"].apply(lambda x: priority_map.get(x, 4))
         df_inf = df_inf.sort_values(by=["CustomPriority", "Dias no Orgão"], ascending=[True, False])
         df_inf = df_inf.drop(columns=["CustomPriority"])
-        filename_inf = f"{inf.replace(' ', '_')}_{numero}_residual_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        filename_inf = f"{inf.replace(' ', '_')}_{numero}_principal_{datetime.now().strftime('%Y%m%d')}.xlsx"
         res_individual_files[inf] = to_excel_bytes(df_inf)
     
-    # Reordena a coluna "Critério" para que apareça (por exemplo, na terceira posição) na planilha geral residual
+    # Reordena a coluna "Critério" para que apareça (por exemplo, na terceira posição) na planilha geral residual/principal
+    # Remove também as colunas indesejadas antes de gerar a planilha geral
+    res_assigned = res_assigned.drop(columns=["Descrição Informação", "Funcionário Informação"], errors='ignore')
     cols = res_assigned.columns.tolist()
     if "Critério" in cols:
         cols.remove("Critério")
         cols.insert(2, "Critério")
         res_assigned = res_assigned[cols]
-        # Recria o arquivo residual com a nova ordem
+        # Recria o arquivo principal com a nova ordem
         res_geral_bytes = to_excel_bytes(res_assigned)
     
     return (pre_geral_filename, pre_geral_bytes,
@@ -283,7 +287,7 @@ if st.button("Executar Distribuição"):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
         st.download_button(
-            "Baixar Planilha Geral RESIDUAL", 
+            "Baixar Planilha Geral PRINCIPAL", 
             data=res_geral_bytes, 
             file_name=res_geral_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -299,11 +303,11 @@ if st.button("Executar Distribuição"):
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         
-        st.markdown("### Planilhas Individuais - Residual")
+        st.markdown("### Planilhas Individuais - Principal")
         for inf, file_bytes in res_individual_files.items():
-            filename_inf = f"{inf.replace(' ', '_')}_{numero}_residual_{datetime.now().strftime('%Y%m%d')}.xlsx"
+            filename_inf = f"{inf.replace(' ', '_')}_{numero}_principal_{datetime.now().strftime('%Y%m%d')}.xlsx"
             st.download_button(
-                f"Baixar para {inf} (Residual)", 
+                f"Baixar para {inf} (Principal)", 
                 data=file_bytes, 
                 file_name=filename_inf,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -317,8 +321,8 @@ if st.button("Executar Distribuição"):
                 subject_pre = "Planilha Geral de Processos Pré-Atribuídos"
                 body_pre = "Segue em anexo a planilha geral com os processos pré-atribuídos."
                 send_email_with_attachments(managers_list, subject_pre, body_pre, pre_geral_bytes, pre_geral_filename)
-                subject_res = "Planilha Geral de Processos Residual"
-                body_res = "Segue em anexo a planilha geral com os processos residuais distribuídos."
+                subject_res = "Planilha Geral de Processos Principal"
+                body_res = "Segue em anexo a planilha geral com os processos principais distribuídos."
                 send_email_with_attachments(managers_list, subject_res, body_res, res_geral_bytes, res_geral_filename)
             
             for inf in set(list(pre_individual_files.keys()) + list(res_individual_files.keys())):
@@ -331,9 +335,9 @@ if st.button("Executar Distribuição"):
                         filename_inf = f"{inf.replace(' ', '_')}_{numero}_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx"
                         send_email_with_attachments([email_destino], subject_inf, body_inf, pre_individual_files[inf], filename_inf)
                     if inf in res_individual_files:
-                        subject_inf = f"Distribuição de Processos - {inf} (Residual)"
-                        body_inf = "Segue em anexo a planilha com os processos residuais distribuídos para você."
-                        filename_inf = f"{inf.replace(' ', '_')}_{numero}_residual_{datetime.now().strftime('%Y%m%d')}.xlsx"
+                        subject_inf = f"Distribuição de Processos - {inf} (Principal)"
+                        body_inf = "Segue em anexo a planilha com os processos principais distribuídos para você."
+                        filename_inf = f"{inf.replace(' ', '_')}_{numero}_principal_{datetime.now().strftime('%Y%m%d')}.xlsx"
                         send_email_with_attachments([email_destino], subject_inf, body_inf, res_individual_files[inf], filename_inf)
         
         st.session_state.numero = numero + 1
