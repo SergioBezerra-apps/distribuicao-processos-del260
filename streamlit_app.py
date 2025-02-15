@@ -50,14 +50,14 @@ def to_excel_bytes(df):
             col_letter = xl_col_to_name(col_index)
             last_row = len(df) + 1  # Cabeçalho na linha 1; dados a partir da linha 2
             cell_range = f'{col_letter}2:{col_letter}{last_row}'
+            # Nova lista de cores escuras
             color_list = [
-                "#FFC7CE", "#C6EFCE", "#FFEB9C", "#9CC3E6",
-                "#D9D2E9", "#FCE4D6", "#D0E0E3", "#E2EFDA"
+                "#990000", "#006600", "#996600", "#003366",
+                "#660066", "#663300", "#003300", "#000066"
             ]
             unique_values = df["Grupo Natureza"].dropna().unique()
             color_mapping = {val: color_list[i % len(color_list)] for i, val in enumerate(unique_values)}
             for value, color in color_mapping.items():
-                # Aplica a cor no texto e formata em negrito
                 fmt = workbook.add_format({'font_color': color, 'bold': True})
                 worksheet.conditional_format(cell_range, {
                     'type': 'cell',
@@ -66,6 +66,7 @@ def to_excel_bytes(df):
                     'format': fmt
                 })
     return output.getvalue()
+
 
 # =============================================================================
 # Função que executa a lógica de distribuição
