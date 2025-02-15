@@ -50,7 +50,7 @@ def to_excel_bytes(df):
             col_letter = xl_col_to_name(col_index)
             last_row = len(df) + 1  # Cabeçalho na linha 1; dados a partir da linha 2
             cell_range = f'{col_letter}2:{col_letter}{last_row}'
-            # Nova lista de cores escuras
+            # Lista de cores de fonte mais escuras
             color_list = [
                 "#990000", "#006600", "#996600", "#003366",
                 "#660066", "#663300", "#003300", "#000066"
@@ -66,7 +66,6 @@ def to_excel_bytes(df):
                     'format': fmt
                 })
     return output.getvalue()
-
 
 # =============================================================================
 # Função que executa a lógica de distribuição
@@ -106,7 +105,7 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     
     # --- Separação dos Processos ---
     # Pré-Atribuídos: processos em que "descrição informação" é "em elaboração" ou "concluída"
-    # E "funcionário informação" não está vazio.
+    # e "funcionário informação" não está vazio.
     mask_preassigned = df["Descrição Informação"].isin(["em elaboração", "concluída"]) & (df["Funcionário Informação"] != "")
     pre_df = df[mask_preassigned].copy()
     pre_df["Informante"] = pre_df["Funcionário Informação"]
@@ -175,7 +174,7 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
     pre_geral_filename = f"{numero}_planilha_geral_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx"
     pre_geral_bytes = to_excel_bytes(pre_df)
     
-    # Altera o nome para "principal" e remove as colunas indesejadas (somente para processos residuais/principais)
+    # Renomeia a planilha residual para "principal" e remove as colunas indesejadas para a planilha geral
     res_geral_filename = f"{numero}_planilha_geral_principal_{datetime.now().strftime('%Y%m%d')}.xlsx"
     
     # --- Geração das Planilhas Individuais ---
@@ -187,10 +186,12 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
         df_inf["CustomPriority"] = df_inf["Critério"].apply(lambda x: priority_map.get(x, 4))
         df_inf = df_inf.sort_values(by=["CustomPriority", "Dias no Orgão"], ascending=[True, False])
         df_inf = df_inf.drop(columns=["CustomPriority"])
+        # Limita a 200 registros por informante
+        df_inf = df_inf.head(200)
         filename_inf = f"{inf.replace(' ', '_')}_{numero}_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx"
         pre_individual_files[inf] = to_excel_bytes(df_inf)
     
-    # Para os processos residuais (por informante)
+    # Para os processos residuais (por informante) - renomeados para "principal"
     res_individual_files = {}
     for inf in res_assigned["Informante"].dropna().unique():
         df_inf = res_assigned[res_assigned["Informante"] == inf].copy()
@@ -200,11 +201,13 @@ def run_distribution(processos_file, obs_file, disp_file, numero):
         df_inf["CustomPriority"] = df_inf["Critério"].apply(lambda x: priority_map.get(x, 4))
         df_inf = df_inf.sort_values(by=["CustomPriority", "Dias no Orgão"], ascending=[True, False])
         df_inf = df_inf.drop(columns=["CustomPriority"])
+        # Limita a 200 registros por informante
+        df_inf = df_inf.head(200)
         filename_inf = f"{inf.replace(' ', '_')}_{numero}_principal_{datetime.now().strftime('%Y%m%d')}.xlsx"
         res_individual_files[inf] = to_excel_bytes(df_inf)
     
-    # Reordena a coluna "Critério" para que apareça (por exemplo, na terceira posição) na planilha geral residual/principal
-    # Remove também as colunas indesejadas antes de gerar a planilha geral
+    # Reordena a coluna "Critério" para que apareça (por exemplo, na terceira posição) na planilha geral principal
+    # Removendo também as colunas indesejadas
     res_assigned = res_assigned.drop(columns=["Descrição Informação", "Funcionário Informação"], errors='ignore')
     cols = res_assigned.columns.tolist()
     if "Critério" in cols:
@@ -228,7 +231,7 @@ if "numero" not in st.session_state:
 # =============================================================================
 # Interface Gráfica (Streamlit)
 # =============================================================================
-st.title("Distribuição de processos da Del. 260 - Interface Gráfica")
+st.title("Distribuição de processos da Del. 260")
 st.markdown("### Faça o upload dos arquivos e configure a distribuição.")
 
 uploaded_files = st.file_uploader(
