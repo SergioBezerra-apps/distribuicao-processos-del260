@@ -429,7 +429,7 @@ if st.button("Executar Distribuição"):
                             "São os novos processos distribuídos entre os informantes disponíveis.\n\n"
                             "Caso tenha dúvidas, entre em contato.\n\n"
                             "Atenciosamente,\n"
-                            "[Equipe de Distribuição de Processos]"
+                            "Gestão da 3ª CAP"
                         )
                         send_email_with_two_attachments(email_destino, subject_inf, body_inf, attachment_pre, filename_pre, attachment_res, filename_res)
         
