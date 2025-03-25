@@ -129,10 +129,18 @@ def create_zip_from_dict(file_dict):
 # =============================================================================
 # Função que executa a lógica de distribuição
 # =============================================================================
-def run_distribution(processos_file, obs_file, disp_file, numero):
-    # Lê o arquivo de processos e filtra apenas os do tipo "Principal"
+def run_distribution(processos_file, processosmanter_file, obs_file, disp_file, numero):
+    # Lê o arquivo de processos
     df = pd.read_excel(processos_file)
     df.columns = df.columns.str.strip()
+    
+    # Filtra registros: remove linhas que não constam na planilha processosmanter.xlsx
+    df_manter = pd.read_excel(processosmanter_file)
+    df_manter.columns = df_manter.columns.str.strip()
+    processos_validos = df_manter["Processo"].dropna().unique()
+    df = df[df["Processo"].isin(processos_validos)]
+    
+    # Filtra apenas os processos do tipo "Principal"
     df = df[df["Tipo Processo"] == "Principal"]
     
     # Seleciona as colunas necessárias
@@ -283,7 +291,7 @@ st.title("Distribuição de Processos da Del. 260")
 st.markdown("### Faça o upload dos arquivos e configure a distribuição.")
 
 uploaded_files = st.file_uploader(
-    "Carregar os arquivos: processos.xlsx, observacoes.xlsx e disponibilidade_equipe.xlsx",
+    "Carregar os arquivos: processos.xlsx, processosmanter.xlsx, observacoes.xlsx e disponibilidade_equipe.xlsx",
     type=["xlsx"],
     accept_multiple_files=True
 )
@@ -294,6 +302,8 @@ if uploaded_files:
         fname = file.name.lower()
         if fname == "processos.xlsx":
             files_dict["processos"] = file
+        elif fname == "processosmanter.xlsx":
+            files_dict["processosmanter"] = file
         elif fname in ["observacoes.xlsx", "obervacoes.xlsx"]:
             files_dict["observacoes"] = file
         elif fname == "disponibilidade_equipe.xlsx":
@@ -327,16 +337,17 @@ managers_emails = st.text_input(
 )
 
 if st.button("Executar Distribuição"):
-    required_keys = ["processos", "observacoes", "disponibilidade"]
+    required_keys = ["processos", "processosmanter", "observacoes", "disponibilidade"]
     if all(key in files_dict for key in required_keys):
         processos_file = files_dict["processos"]
+        processosmanter_file = files_dict["processosmanter"]
         obs_file = files_dict["observacoes"]
         disp_file = files_dict["disponibilidade"]
 
         (pre_geral_filename, pre_geral_bytes,
          res_geral_filename, res_geral_bytes,
          pre_individual_files, res_individual_files,
-         informantes_emails) = run_distribution(processos_file, obs_file, disp_file, numero)
+         informantes_emails) = run_distribution(processos_file, processosmanter_file, obs_file, disp_file, numero)
 
         st.success("Distribuição executada com sucesso!")
         
@@ -435,4 +446,4 @@ if st.button("Executar Distribuição"):
         
         st.session_state.numero = numero + 1
     else:
-        st.error("Por favor, faça o upload dos três arquivos necessários: processos.xlsx, observacoes.xlsx e disponibilidade_equipe.xlsx.")
+        st.error("Por favor, faça o upload dos quatro arquivos necessários: processos.xlsx, processosmanter.xlsx, observacoes.xlsx e disponibilidade_equipe.xlsx.")
