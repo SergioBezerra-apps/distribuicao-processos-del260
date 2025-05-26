@@ -305,13 +305,24 @@ if st.button("Executar Distribuição"):
             pre_geral_filename = f"{numero}_planilha_geral_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx"
             pre_geral_bytes = to_excel_bytes(pre_df)
             res_geral_filename = f"{numero}_planilha_geral_principal_{datetime.now().strftime('%Y%m%d')}.xlsx"
-            res_assigned = res_assigned.drop(columns=["Descrição Informação", "Funcionário Informação"], errors='ignore')
-            cols = res_assigned.columns.tolist()
+            # === APLICAR FILTROS DE GRUPO NATUREZA POR INFORMANTE ANTES DE GERAR A PLANILHA GERAL PRINCIPAL ===
+            df_list = []
+            for inf in res_assigned["Informante"].dropna().unique():
+                df_inf = res_assigned[res_assigned["Informante"] == inf].copy()
+                grupos_escolhidos = filtros_grupo_natureza.get(inf, [])
+                if grupos_escolhidos:
+                    df_inf = df_inf[df_inf["Grupo Natureza"].isin(grupos_escolhidos)]
+                df_list.append(df_inf)
+            res_assigned_filtered = pd.concat(df_list, ignore_index=True)
+            
+            res_assigned_filtered = res_assigned_filtered.drop(columns=["Descrição Informação", "Funcionário Informação"], errors='ignore')
+            cols = res_assigned_filtered.columns.tolist()
             if "Critério" in cols:
                 cols.remove("Critério")
                 cols.insert(2, "Critério")
-                res_assigned = res_assigned[cols]
-            res_geral_bytes = to_excel_bytes(res_assigned)
+                res_assigned_filtered = res_assigned_filtered[cols]
+            res_geral_bytes = to_excel_bytes(res_assigned_filtered)
+
 
             # -------- GERAÇÃO DAS PLANILHAS INDIVIDUAIS --------
             pre_individual_files = {}
