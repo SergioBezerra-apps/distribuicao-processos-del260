@@ -247,6 +247,12 @@ if st.button("Executar Distribuição"):
             df_obs = pd.read_excel(obs_file)
             df_obs.columns = df_obs.columns.str.strip()
             df = pd.merge(df, df_obs[["Processo", "Obs", "Data Obs"]], on="Processo", how="left")
+        
+            # === NOVO: Remover processos com "análise suspensa" em Obs ===
+            if "Obs" in df.columns:
+                mask_suspensa = df["Obs"].astype(str).str.lower().str.contains("análise suspensa")
+                df = df[~mask_suspensa].copy()
+        
             df["Data Última Carga"] = pd.to_datetime(df["Data Última Carga"], errors="coerce")
             df["Data Obs"] = pd.to_datetime(df["Data Obs"], errors="coerce")
             def update_obs(row):
