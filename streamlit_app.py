@@ -217,182 +217,182 @@ if st.button("Executar Distribuição"):
     required_keys = ["processos", "processosmanter", "observacoes", "disponibilidade"]
     if all(key in files_dict for key in required_keys):
 
-        def run_distribution(
-    processos_file,
-    processosmanter_file,
-    obs_file,
-    disp_file,
-    numero,
-    filtros_grupo_natureza,
-    filtros_orgao_origem,
-    exclusive_orgao_map=None,
-    exclusive_mode=False
-):
-    # 1. Leitura dos dados e pré-processamento
-    df = pd.read_excel(processos_file)
-    df.columns = df.columns.str.strip()
-    df_manter = pd.read_excel(processosmanter_file)
-    df_manter.columns = df_manter.columns.str.strip()
-    processos_validos = df_manter["Processo"].dropna().unique()
-    df = df[df["Processo"].isin(processos_validos)]
-    df = df[df["Tipo Processo"] == "Principal"]
-
-    required_cols = [
-        "Processo", "Grupo Natureza", "Orgão Origem", "Dias no Orgão",
-        "Tempo TCERJ", "Data Última Carga", "Descrição Informação", "Funcionário Informação"
-    ]
-    df = df[required_cols]
-    df["Descrição Informação"] = df["Descrição Informação"].astype(str).str.strip().str.lower()
-    df["Funcionário Informação"] = df["Funcionário Informação"].astype(str).str.strip()
-
-    df_obs = pd.read_excel(obs_file)
-    df_obs.columns = df_obs.columns.str.strip()
-    df = pd.merge(df, df_obs[["Processo", "Obs", "Data Obs"]], on="Processo", how="left")
-    if "Obs" in df.columns:
-        mask_suspensa = df["Obs"].astype(str).str.lower().str.contains("análise suspensa")
-        df = df[~mask_suspensa].copy()
-
-    df["Data Última Carga"] = pd.to_datetime(df["Data Última Carga"], errors="coerce")
-    df["Data Obs"] = pd.to_datetime(df["Data Obs"], errors="coerce")
-    def update_obs(row):
-        if pd.notna(row["Data Obs"]) and pd.notna(row["Data Última Carga"]) and row["Data Obs"] > row["Data Última Carga"]:
-            return pd.Series([row["Obs"], row["Data Obs"]])
-        else:
-            return pd.Series(["", ""])
-    df[["Obs", "Data Obs"]] = df.apply(update_obs, axis=1)
-    df = df.drop(columns=["Data Última Carga"])
-
-    # 2. Separação dos processos pré-atribuídos e dos principais
-    mask_preassigned = df["Descrição Informação"].isin(["em elaboração", "concluída"]) & (df["Funcionário Informação"] != "")
-    pre_df = df[mask_preassigned].copy()
-    pre_df["Informante"] = pre_df["Funcionário Informação"]
-    mask_residual = ~mask_preassigned
-    res_df = df[mask_residual].copy()
-
-    # 3. Distribuição original por grupo A/B (SEM FILTRO)
-    df_disp = pd.read_excel(disp_file)
-    df_disp.columns = df_disp.columns.str.strip()
-    df_disp["disponibilidade"] = df_disp["disponibilidade"].str.lower()
-    df_disp = df_disp[df_disp["disponibilidade"] == "sim"].copy()
-    informantes_emails = dict(zip(df_disp["informantes"].str.upper(), df_disp["email"]))
-
-    informantes_grupo_a = [
-        "ALESSANDRO RIBEIRO RIOS", "ANDRE LUIZ BREIA",
-        "ROSANE CESAR DE CARVALHO SCHLOSSER", "ANNA PAULA CYMERMAN"
-    ]
-    informantes_grupo_b = [
-        "LUCIA MARIA FELIPE DA SILVA", "MONICA ARANHA GOMES DO NASCIMENTO",
-        "RODRIGO SILVEIRA BARRETO", "JOSÉ CARLOS NUNES"
-    ]
-    informantes_grupo_a = [inf for inf in informantes_grupo_a if inf in informantes_emails]
-    informantes_grupo_b = [inf for inf in informantes_grupo_b if inf in informantes_emails]
-    origens_especiais = ["SEC EST POLICIA MILITAR", "SEC EST DEFESA CIVIL"]
-
-    # Grupo A: órgãos especiais
-    df_grupo_a = res_df[res_df["Orgão Origem"].isin(origens_especiais)].copy()
-    df_grupo_b = res_df[~res_df["Orgão Origem"].isin(origens_especiais)].copy()
-
-    # Round-robin por informante dentro de cada grupo
-    df_grupo_a = df_grupo_a.sort_values(by="Dias no Orgão", ascending=False).reset_index(drop=True)
-    df_grupo_b = df_grupo_b.sort_values(by="Dias no Orgão", ascending=False).reset_index(drop=True)
-    if informantes_grupo_a:
-        df_grupo_a["Informante"] = [informantes_grupo_a[i % len(informantes_grupo_a)] for i in range(len(df_grupo_a))]
-    if informantes_grupo_b:
-        df_grupo_b["Informante"] = [informantes_grupo_b[i % len(informantes_grupo_b)] for i in range(len(df_grupo_b))]
-
-    res_assigned = pd.concat([df_grupo_a, df_grupo_b], ignore_index=True)
-
-    # 4. Atribuição exclusiva de órgão (após round-robin)
-    if exclusive_mode and exclusive_orgao_map:
-        for orgao, inf in exclusive_orgao_map.items():
-            if inf != "(não atribuir exclusivamente)":
-                res_assigned.loc[res_assigned["Orgão Origem"] == orgao, "Informante"] = inf
-
-    # 5. Cálculo de critério e ordenação para prioridade
-    def calcula_criterio(row):
-        if pd.isna(row["Processo"]) or row["Processo"] == "":
-            return ""
-        elif row["Tempo TCERJ"] > 1765:
-            return "01 Mais de cinco anos de autuado"
-        elif 1220 < row["Tempo TCERJ"] < 1765:
-            return "02 A completar 5 anos de autuado"
-        elif row["Dias no Orgão"] >= 150:
-            return "03 Mais de 5 meses na 3CAP"
-        else:
-            return "04 Data da carga"
-    res_assigned["Critério"] = res_assigned.apply(calcula_criterio, axis=1)
-    priority_map = {
-        "01 Mais de cinco anos de autuado": 0,
-        "02 A completar 5 anos de autuado": 1,
-        "03 Mais de 5 meses na 3CAP": 2,
-        "04 Data da carga": 3
-    }
-    res_assigned["CustomPriority"] = res_assigned["Critério"].apply(lambda x: priority_map.get(x, 4))
-    res_assigned = res_assigned.sort_values(by=["Informante", "CustomPriority", "Dias no Orgão"],
-                                            ascending=[True, True, False]).reset_index(drop=True)
-    res_assigned = res_assigned.drop(columns=["CustomPriority"])
-
-    # 6. Geração das planilhas gerais
-    pre_geral_filename = f"{numero}_planilha_geral_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx"
-    pre_geral_bytes = to_excel_bytes(pre_df)
-    res_geral_filename = f"{numero}_planilha_geral_principal_{datetime.now().strftime('%Y%m%d')}.xlsx"
-
-    # 7. Aplicação dos filtros por informante apenas para a exportação/relatórios
-    df_list = []
-    for inf in res_assigned["Informante"].dropna().unique():
-        df_inf = res_assigned[res_assigned["Informante"] == inf].copy()
-        grupos_escolhidos = filtros_grupo_natureza.get(inf, [])
-        orgaos_escolhidos = filtros_orgao_origem.get(inf, [])
-        if grupos_escolhidos:
-            df_inf = df_inf[df_inf["Grupo Natureza"].isin(grupos_escolhidos)]
-        if orgaos_escolhidos:
-            df_inf = df_inf[df_inf["Orgão Origem"].isin(orgaos_escolhidos)]
-        df_list.append(df_inf)
-    res_assigned_filtered = pd.concat(df_list, ignore_index=True)
-
-    res_assigned_filtered = res_assigned_filtered.drop(columns=["Descrição Informação", "Funcionário Informação"], errors='ignore')
-    cols = res_assigned_filtered.columns.tolist()
-    if "Critério" in cols:
-        cols.remove("Critério")
-        cols.insert(2, "Critério")
-        res_assigned_filtered = res_assigned_filtered[cols]
-    res_geral_bytes = to_excel_bytes(res_assigned_filtered)
-
-    # 8. Planilhas individuais por informante
-    pre_individual_files = {}
-    for inf in pre_df["Informante"].dropna().unique():
-        df_inf = pre_df[pre_df["Informante"] == inf].copy()
-        df_inf["Critério"] = df_inf.apply(calcula_criterio, axis=1)
-        df_inf["CustomPriority"] = df_inf["Critério"].apply(lambda x: priority_map.get(x, 4))
-        df_inf = df_inf.sort_values(by=["CustomPriority", "Dias no Orgão"], ascending=[True, False])
-        df_inf = df_inf.drop(columns=["CustomPriority"])
-        df_inf = df_inf.head(200)
-        filename_inf = f"{inf.replace(' ', '_')}_{numero}_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx"
-        pre_individual_files[inf] = to_excel_bytes(df_inf)
-
-    res_individual_files = {}
-    for inf in res_assigned["Informante"].dropna().unique():
-        df_inf = res_assigned[res_assigned["Informante"] == inf].copy()
-        grupos_escolhidos = filtros_grupo_natureza.get(inf, [])
-        orgaos_escolhidos = filtros_orgao_origem.get(inf, [])
-        if grupos_escolhidos:
-            df_inf = df_inf[df_inf["Grupo Natureza"].isin(grupos_escolhidos)]
-        if orgaos_escolhidos:
-            df_inf = df_inf[df_inf["Orgão Origem"].isin(orgaos_escolhidos)]
-        df_inf["Critério"] = df_inf.apply(calcula_criterio, axis=1)
-        df_inf["CustomPriority"] = df_inf["Critério"].apply(lambda x: priority_map.get(x, 4))
-        df_inf = df_inf.sort_values(by=["CustomPriority", "Dias no Orgão"], ascending=[True, False])
-        df_inf = df_inf.drop(columns=["CustomPriority"])
-        df_inf = df_inf.head(200)
-        filename_inf = f"{inf.replace(' ', '_')}_{numero}_principal_{datetime.now().strftime('%Y%m%d')}.xlsx"
-        res_individual_files[inf] = to_excel_bytes(df_inf)
-
-    return (
-        pre_geral_filename, pre_geral_bytes,
-        res_geral_filename, res_geral_bytes,
-        pre_individual_files, res_individual_files,
-        informantes_emails
-    )
+                def run_distribution(
+            processos_file,
+            processosmanter_file,
+            obs_file,
+            disp_file,
+            numero,
+            filtros_grupo_natureza,
+            filtros_orgao_origem,
+            exclusive_orgao_map=None,
+            exclusive_mode=False
+        ):
+            # 1. Leitura dos dados e pré-processamento
+            df = pd.read_excel(processos_file)
+            df.columns = df.columns.str.strip()
+            df_manter = pd.read_excel(processosmanter_file)
+            df_manter.columns = df_manter.columns.str.strip()
+            processos_validos = df_manter["Processo"].dropna().unique()
+            df = df[df["Processo"].isin(processos_validos)]
+            df = df[df["Tipo Processo"] == "Principal"]
+        
+            required_cols = [
+                "Processo", "Grupo Natureza", "Orgão Origem", "Dias no Orgão",
+                "Tempo TCERJ", "Data Última Carga", "Descrição Informação", "Funcionário Informação"
+            ]
+            df = df[required_cols]
+            df["Descrição Informação"] = df["Descrição Informação"].astype(str).str.strip().str.lower()
+            df["Funcionário Informação"] = df["Funcionário Informação"].astype(str).str.strip()
+        
+            df_obs = pd.read_excel(obs_file)
+            df_obs.columns = df_obs.columns.str.strip()
+            df = pd.merge(df, df_obs[["Processo", "Obs", "Data Obs"]], on="Processo", how="left")
+            if "Obs" in df.columns:
+                mask_suspensa = df["Obs"].astype(str).str.lower().str.contains("análise suspensa")
+                df = df[~mask_suspensa].copy()
+        
+            df["Data Última Carga"] = pd.to_datetime(df["Data Última Carga"], errors="coerce")
+            df["Data Obs"] = pd.to_datetime(df["Data Obs"], errors="coerce")
+            def update_obs(row):
+                if pd.notna(row["Data Obs"]) and pd.notna(row["Data Última Carga"]) and row["Data Obs"] > row["Data Última Carga"]:
+                    return pd.Series([row["Obs"], row["Data Obs"]])
+                else:
+                    return pd.Series(["", ""])
+            df[["Obs", "Data Obs"]] = df.apply(update_obs, axis=1)
+            df = df.drop(columns=["Data Última Carga"])
+        
+            # 2. Separação dos processos pré-atribuídos e dos principais
+            mask_preassigned = df["Descrição Informação"].isin(["em elaboração", "concluída"]) & (df["Funcionário Informação"] != "")
+            pre_df = df[mask_preassigned].copy()
+            pre_df["Informante"] = pre_df["Funcionário Informação"]
+            mask_residual = ~mask_preassigned
+            res_df = df[mask_residual].copy()
+        
+            # 3. Distribuição original por grupo A/B (SEM FILTRO)
+            df_disp = pd.read_excel(disp_file)
+            df_disp.columns = df_disp.columns.str.strip()
+            df_disp["disponibilidade"] = df_disp["disponibilidade"].str.lower()
+            df_disp = df_disp[df_disp["disponibilidade"] == "sim"].copy()
+            informantes_emails = dict(zip(df_disp["informantes"].str.upper(), df_disp["email"]))
+        
+            informantes_grupo_a = [
+                "ALESSANDRO RIBEIRO RIOS", "ANDRE LUIZ BREIA",
+                "ROSANE CESAR DE CARVALHO SCHLOSSER", "ANNA PAULA CYMERMAN"
+            ]
+            informantes_grupo_b = [
+                "LUCIA MARIA FELIPE DA SILVA", "MONICA ARANHA GOMES DO NASCIMENTO",
+                "RODRIGO SILVEIRA BARRETO", "JOSÉ CARLOS NUNES"
+            ]
+            informantes_grupo_a = [inf for inf in informantes_grupo_a if inf in informantes_emails]
+            informantes_grupo_b = [inf for inf in informantes_grupo_b if inf in informantes_emails]
+            origens_especiais = ["SEC EST POLICIA MILITAR", "SEC EST DEFESA CIVIL"]
+        
+            # Grupo A: órgãos especiais
+            df_grupo_a = res_df[res_df["Orgão Origem"].isin(origens_especiais)].copy()
+            df_grupo_b = res_df[~res_df["Orgão Origem"].isin(origens_especiais)].copy()
+        
+            # Round-robin por informante dentro de cada grupo
+            df_grupo_a = df_grupo_a.sort_values(by="Dias no Orgão", ascending=False).reset_index(drop=True)
+            df_grupo_b = df_grupo_b.sort_values(by="Dias no Orgão", ascending=False).reset_index(drop=True)
+            if informantes_grupo_a:
+                df_grupo_a["Informante"] = [informantes_grupo_a[i % len(informantes_grupo_a)] for i in range(len(df_grupo_a))]
+            if informantes_grupo_b:
+                df_grupo_b["Informante"] = [informantes_grupo_b[i % len(informantes_grupo_b)] for i in range(len(df_grupo_b))]
+        
+            res_assigned = pd.concat([df_grupo_a, df_grupo_b], ignore_index=True)
+        
+            # 4. Atribuição exclusiva de órgão (após round-robin)
+            if exclusive_mode and exclusive_orgao_map:
+                for orgao, inf in exclusive_orgao_map.items():
+                    if inf != "(não atribuir exclusivamente)":
+                        res_assigned.loc[res_assigned["Orgão Origem"] == orgao, "Informante"] = inf
+        
+            # 5. Cálculo de critério e ordenação para prioridade
+            def calcula_criterio(row):
+                if pd.isna(row["Processo"]) or row["Processo"] == "":
+                    return ""
+                elif row["Tempo TCERJ"] > 1765:
+                    return "01 Mais de cinco anos de autuado"
+                elif 1220 < row["Tempo TCERJ"] < 1765:
+                    return "02 A completar 5 anos de autuado"
+                elif row["Dias no Orgão"] >= 150:
+                    return "03 Mais de 5 meses na 3CAP"
+                else:
+                    return "04 Data da carga"
+            res_assigned["Critério"] = res_assigned.apply(calcula_criterio, axis=1)
+            priority_map = {
+                "01 Mais de cinco anos de autuado": 0,
+                "02 A completar 5 anos de autuado": 1,
+                "03 Mais de 5 meses na 3CAP": 2,
+                "04 Data da carga": 3
+            }
+            res_assigned["CustomPriority"] = res_assigned["Critério"].apply(lambda x: priority_map.get(x, 4))
+            res_assigned = res_assigned.sort_values(by=["Informante", "CustomPriority", "Dias no Orgão"],
+                                                    ascending=[True, True, False]).reset_index(drop=True)
+            res_assigned = res_assigned.drop(columns=["CustomPriority"])
+        
+            # 6. Geração das planilhas gerais
+            pre_geral_filename = f"{numero}_planilha_geral_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx"
+            pre_geral_bytes = to_excel_bytes(pre_df)
+            res_geral_filename = f"{numero}_planilha_geral_principal_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        
+            # 7. Aplicação dos filtros por informante apenas para a exportação/relatórios
+            df_list = []
+            for inf in res_assigned["Informante"].dropna().unique():
+                df_inf = res_assigned[res_assigned["Informante"] == inf].copy()
+                grupos_escolhidos = filtros_grupo_natureza.get(inf, [])
+                orgaos_escolhidos = filtros_orgao_origem.get(inf, [])
+                if grupos_escolhidos:
+                    df_inf = df_inf[df_inf["Grupo Natureza"].isin(grupos_escolhidos)]
+                if orgaos_escolhidos:
+                    df_inf = df_inf[df_inf["Orgão Origem"].isin(orgaos_escolhidos)]
+                df_list.append(df_inf)
+            res_assigned_filtered = pd.concat(df_list, ignore_index=True)
+        
+            res_assigned_filtered = res_assigned_filtered.drop(columns=["Descrição Informação", "Funcionário Informação"], errors='ignore')
+            cols = res_assigned_filtered.columns.tolist()
+            if "Critério" in cols:
+                cols.remove("Critério")
+                cols.insert(2, "Critério")
+                res_assigned_filtered = res_assigned_filtered[cols]
+            res_geral_bytes = to_excel_bytes(res_assigned_filtered)
+        
+            # 8. Planilhas individuais por informante
+            pre_individual_files = {}
+            for inf in pre_df["Informante"].dropna().unique():
+                df_inf = pre_df[pre_df["Informante"] == inf].copy()
+                df_inf["Critério"] = df_inf.apply(calcula_criterio, axis=1)
+                df_inf["CustomPriority"] = df_inf["Critério"].apply(lambda x: priority_map.get(x, 4))
+                df_inf = df_inf.sort_values(by=["CustomPriority", "Dias no Orgão"], ascending=[True, False])
+                df_inf = df_inf.drop(columns=["CustomPriority"])
+                df_inf = df_inf.head(200)
+                filename_inf = f"{inf.replace(' ', '_')}_{numero}_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx"
+                pre_individual_files[inf] = to_excel_bytes(df_inf)
+        
+            res_individual_files = {}
+            for inf in res_assigned["Informante"].dropna().unique():
+                df_inf = res_assigned[res_assigned["Informante"] == inf].copy()
+                grupos_escolhidos = filtros_grupo_natureza.get(inf, [])
+                orgaos_escolhidos = filtros_orgao_origem.get(inf, [])
+                if grupos_escolhidos:
+                    df_inf = df_inf[df_inf["Grupo Natureza"].isin(grupos_escolhidos)]
+                if orgaos_escolhidos:
+                    df_inf = df_inf[df_inf["Orgão Origem"].isin(orgaos_escolhidos)]
+                df_inf["Critério"] = df_inf.apply(calcula_criterio, axis=1)
+                df_inf["CustomPriority"] = df_inf["Critério"].apply(lambda x: priority_map.get(x, 4))
+                df_inf = df_inf.sort_values(by=["CustomPriority", "Dias no Orgão"], ascending=[True, False])
+                df_inf = df_inf.drop(columns=["CustomPriority"])
+                df_inf = df_inf.head(200)
+                filename_inf = f"{inf.replace(' ', '_')}_{numero}_principal_{datetime.now().strftime('%Y%m%d')}.xlsx"
+                res_individual_files[inf] = to_excel_bytes(df_inf)
+        
+            return (
+                pre_geral_filename, pre_geral_bytes,
+                res_geral_filename, res_geral_bytes,
+                pre_individual_files, res_individual_files,
+                informantes_emails
+            )
 
         # ---- Chamada principal ----
         processos_file = files_dict["processos"]
