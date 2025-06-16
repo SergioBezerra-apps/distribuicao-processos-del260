@@ -6,6 +6,7 @@ from datetime import datetime
 import smtplib
 from email.message import EmailMessage
 from xlsxwriter.utility import xl_col_to_name
+import unicodedata
 
 # =============================================================================
 # Funções de envio de e-mail e geração de arquivos (igual ao seu padrão)
@@ -105,6 +106,10 @@ def create_zip_from_dict(file_dict):
     zip_buffer.seek(0)
     return zip_buffer.getvalue()
 
+
+def normalize_filename(name: str) -> str:
+    return unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii").lower()
+
 # =============================================================================
 # Interface principal
 # =============================================================================
@@ -123,12 +128,12 @@ uploaded_files = st.file_uploader(
 
 files_dict = {}
 for file in uploaded_files or []:
-    fname = file.name.lower()
+    fname = normalize_filename(file.name)
     if fname == "processos.xlsx":
         files_dict["processos"] = file
     elif fname == "processosmanter.xlsx":
         files_dict["processosmanter"] = file
-    elif fname in ["observacoes.xlsx", "obervacoes.xlsx"]:
+    elif fname == "observacoes.xlsx":
         files_dict["observacoes"] = file
     elif fname == "disponibilidade_equipe.xlsx":
         files_dict["disponibilidade"] = file
