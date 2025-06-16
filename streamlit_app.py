@@ -158,12 +158,16 @@ managers_emails = st.text_input(
 # ------------------------------------------
 
 filtros_grupo_natureza = {}
-filtros_orgao_origem = {}  # ==== NOVO FILTRO ====
+filtros_orgao_origem = {}
 
 informantes_principais = []
 grupo_natureza_options = []
+orgaos_origem_options = []
 
-# SÓ mostra a interface de filtros quando TODOS os arquivos estiverem presentes
+# ==== NOVO: Mapeamento exclusivo de Orgão Origem para Informante ====
+exclusive_mode = False
+exclusive_orgao_map = {}
+
 if all(key in files_dict for key in ["processos", "processosmanter", "observacoes", "disponibilidade"]):
     # Carrega dados necessários para montar as opções de filtro
     df_proc = pd.read_excel(files_dict["processos"])
@@ -174,7 +178,6 @@ if all(key in files_dict for key in ["processos", "processosmanter", "observacoe
     df_proc = df_proc[df_proc["Processo"].isin(processos_validos)]
     df_proc = df_proc[df_proc["Tipo Processo"] == "Principal"]
 
-    # Lógica de distribuição dos principais (igual à sua lógica):
     df_proc["Descrição Informação"] = df_proc["Descrição Informação"].astype(str).str.strip().str.lower()
     df_proc["Funcionário Informação"] = df_proc["Funcionário Informação"].astype(str).str.strip()
     mask_preassigned = df_proc["Descrição Informação"].isin(["em elaboração", "concluída"]) & (df_proc["Funcionário Informação"] != "")
@@ -208,7 +211,19 @@ if all(key in files_dict for key in ["processos", "processosmanter", "observacoe
 
     informantes_principais = sorted(res_assigned["Informante"].dropna().unique())
     grupo_natureza_options = sorted(res_assigned["Grupo Natureza"].dropna().unique())
-    orgaos_origem_options = sorted(res_assigned["Orgão Origem"].dropna().unique())  # ==== NOVO ====
+    orgaos_origem_options = sorted(res_assigned["Orgão Origem"].dropna().unique())
+
+    # ==== Interface de atribuição exclusiva ====
+    st.markdown("### Atribuição exclusiva de Orgão Origem (opcional)")
+    exclusive_mode = st.checkbox("Atribuir cada Orgão Origem a apenas um informante?", value=False)
+    exclusive_orgao_map = {}
+    if exclusive_mode:
+        for orgao in orgaos_origem_options:
+            exclusive_orgao_map[orgao] = st.selectbox(
+                f"Selecione o informante responsável exclusivamente por '{orgao}'",
+                options=["(não atribuir exclusivamente)"] + informantes_principais,
+                key=f"selectbox_exclusivo_{orgao.replace(' ', '_')}"
+            )
 
     st.markdown("### Filtros de Grupo Natureza e Orgão Origem para Processos Principais (por informante)")
     for inf in informantes_principais:
@@ -231,7 +246,7 @@ if st.button("Executar Distribuição"):
     required_keys = ["processos", "processosmanter", "observacoes", "disponibilidade"]
     if all(key in files_dict for key in required_keys):
 
-        def run_distribution(processos_file, processosmanter_file, obs_file, disp_file, numero, filtros_grupo_natureza, filtros_orgao_origem):
+        def run_distribution(processos_file, processosmanter_file, obs_file, disp_file, numero, filtros_grupo_natureza, filtros_orgao_origem, exclusive_orgao_map=None, exclusive_mode=False):
             df = pd.read_excel(processos_file)
             df.columns = df.columns.str.strip()
             df_manter = pd.read_excel(processosmanter_file)
@@ -249,12 +264,12 @@ if st.button("Executar Distribuição"):
             df_obs = pd.read_excel(obs_file)
             df_obs.columns = df_obs.columns.str.strip()
             df = pd.merge(df, df_obs[["Processo", "Obs", "Data Obs"]], on="Processo", how="left")
-        
-            # === NOVO: Remover processos com "análise suspensa" em Obs ===
+
+            # === Remover processos com "análise suspensa" em Obs ===
             if "Obs" in df.columns:
                 mask_suspensa = df["Obs"].astype(str).str.lower().str.contains("análise suspensa")
                 df = df[~mask_suspensa].copy()
-        
+
             df["Data Última Carga"] = pd.to_datetime(df["Data Última Carga"], errors="coerce")
             df["Data Obs"] = pd.to_datetime(df["Data Obs"], errors="coerce")
             def update_obs(row):
@@ -288,6 +303,18 @@ if st.button("Executar Distribuição"):
             if informantes_grupo_b:
                 df_grupo_b["Informante"] = [informantes_grupo_b[i % len(informantes_grupo_b)] for i in range(len(df_grupo_b))]
             res_assigned = pd.concat([df_grupo_a, df_grupo_b], ignore_index=True)
+
+            # ==== Atribuição exclusiva de órgãos ====
+            if exclusive_mode and exclusive_orgao_map:
+                orgaos_exclusivos = [k for k, v in exclusive_orgao_map.items() if v != "(não atribuir exclusivamente)"]
+                exclusive_rows = res_assigned[res_assigned["Orgão Origem"].isin(orgaos_exclusivos)].copy()
+                other_rows = res_assigned[~res_assigned["Orgão Origem"].isin(orgaos_exclusivos)].copy()
+                # Atribui cada órgão exclusivo ao informante selecionado
+                for orgao, inf in exclusive_orgao_map.items():
+                    if inf != "(não atribuir exclusivamente)":
+                        exclusive_rows.loc[exclusive_rows["Orgão Origem"] == orgao, "Informante"] = inf
+                res_assigned = pd.concat([exclusive_rows, other_rows], ignore_index=True)
+
             def calcula_criterio(row):
                 if pd.isna(row["Processo"]) or row["Processo"] == "":
                     return ""
@@ -379,7 +406,9 @@ if st.button("Executar Distribuição"):
          res_geral_filename, res_geral_bytes,
          pre_individual_files, res_individual_files,
          informantes_emails) = run_distribution(
-            processos_file, processosmanter_file, obs_file, disp_file, numero, filtros_grupo_natureza, filtros_orgao_origem
+            processos_file, processosmanter_file, obs_file, disp_file, numero,
+            filtros_grupo_natureza, filtros_orgao_origem,
+            exclusive_orgao_map=exclusive_orgao_map, exclusive_mode=exclusive_mode
         )
 
         st.success("Distribuição executada com sucesso!")
