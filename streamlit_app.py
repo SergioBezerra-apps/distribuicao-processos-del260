@@ -8,7 +8,7 @@ from email.message import EmailMessage
 from xlsxwriter.utility import xl_col_to_name
 
 # =============================================================================
-# Funções de envio de e-mail e geração de arquivos
+# Funções utilitárias
 # =============================================================================
 
 def send_email_with_multiple_attachments(to_emails, subject, body, attachments):
@@ -154,7 +154,7 @@ managers_emails = st.text_input(
 )
 
 # ------------------------------------------
-# Montagem dos filtros por informante e órgão origem
+# Filtros e seleção exclusiva
 # ------------------------------------------
 
 filtros_grupo_natureza = {}
@@ -167,7 +167,7 @@ exclusive_mode = False
 exclusive_orgao_map = {}
 
 if all(key in files_dict for key in ["processos", "processosmanter", "observacoes", "disponibilidade"]):
-    # Carrega dados necessários para montar as opções de filtro
+    # Carrega DataFrames para montar as opções dos filtros
     df_proc = pd.read_excel(files_dict["processos"])
     df_proc.columns = df_proc.columns.str.strip()
     df_manter = pd.read_excel(files_dict["processosmanter"])
@@ -218,6 +218,7 @@ if st.button("Executar Distribuição"):
     if all(key in files_dict for key in required_keys):
 
         def run_distribution(processos_file, processosmanter_file, obs_file, disp_file, numero, filtros_grupo_natureza, filtros_orgao_origem, exclusive_orgao_map=None, exclusive_mode=False):
+            # ----------- Leitura e tratamento dos dados ----------
             df = pd.read_excel(processos_file)
             df.columns = df.columns.str.strip()
             df_manter = pd.read_excel(processosmanter_file)
@@ -252,23 +253,39 @@ if st.button("Executar Distribuição"):
             pre_df["Informante"] = pre_df["Funcionário Informação"]
             mask_residual = ~mask_preassigned
             res_df = df[mask_residual].copy()
+
+            # ----------- Lógica de distribuição original ----------
             df_disp = pd.read_excel(disp_file)
             df_disp.columns = df_disp.columns.str.strip()
-            df_disp = df_disp[df_disp["disponibilidade"].str.lower() == "sim"].copy()
+            df_disp["disponibilidade"] = df_disp["disponibilidade"].str.lower()
+            df_disp = df_disp[df_disp["disponibilidade"] == "sim"].copy()
             informantes_emails = dict(zip(df_disp["informantes"].str.upper(), df_disp["email"]))
-            informantes_principais = sorted(df_disp["informantes"].dropna().unique())
 
-            # ====== Distribuição padrão ======
-            # Simples round-robin igual ao anterior (exemplo básico, substitua conforme sua regra real)
-            res_df = res_df.copy()
-            if len(informantes_principais) > 0:
-                res_df["Informante"] = [informantes_principais[i % len(informantes_principais)] for i in range(len(res_df))]
-            else:
-                res_df["Informante"] = ""
+            # Grupos fixos de informantes (igual ao original)
+            informantes_grupo_a = [
+                "ALESSANDRO RIBEIRO RIOS", "ANDRE LUIZ BREIA",
+                "ROSANE CESAR DE CARVALHO SCHLOSSER", "ANNA PAULA CYMERMAN"
+            ]
+            informantes_grupo_b = [
+                "LUCIA MARIA FELIPE DA SILVA", "MONICA ARANHA GOMES DO NASCIMENTO",
+                "RODRIGO SILVEIRA BARRETO", "JOSÉ CARLOS NUNES"
+            ]
+            informantes_grupo_a = [inf for inf in informantes_grupo_a if inf in informantes_emails]
+            informantes_grupo_b = [inf for inf in informantes_grupo_b if inf in informantes_emails]
+            origens_especiais = ["SEC EST POLICIA MILITAR", "SEC EST DEFESA CIVIL"]
 
-            res_assigned = res_df.copy()
+            # Processos dos grupos A e B
+            df_grupo_a = res_df[res_df["Orgão Origem"].isin(origens_especiais)].copy()
+            df_grupo_b = res_df[~res_df["Orgão Origem"].isin(origens_especiais)].copy()
+            df_grupo_a = df_grupo_a.sort_values(by="Dias no Orgão", ascending=False).reset_index(drop=True)
+            df_grupo_b = df_grupo_b.sort_values(by="Dias no Orgão", ascending=False).reset_index(drop=True)
+            if informantes_grupo_a:
+                df_grupo_a["Informante"] = [informantes_grupo_a[i % len(informantes_grupo_a)] for i in range(len(df_grupo_a))]
+            if informantes_grupo_b:
+                df_grupo_b["Informante"] = [informantes_grupo_b[i % len(informantes_grupo_b)] for i in range(len(df_grupo_b))]
+            res_assigned = pd.concat([df_grupo_a, df_grupo_b], ignore_index=True)
 
-            # ==== Atribuição exclusiva de órgãos ====
+            # ----------- Atribuição exclusiva por órgão (se houver) -----------
             if exclusive_mode and exclusive_orgao_map:
                 orgaos_exclusivos = [k for k, v in exclusive_orgao_map.items() if v != "(não atribuir exclusivamente)"]
                 exclusive_rows = res_assigned[res_assigned["Orgão Origem"].isin(orgaos_exclusivos)].copy()
@@ -278,6 +295,7 @@ if st.button("Executar Distribuição"):
                         exclusive_rows.loc[exclusive_rows["Orgão Origem"] == orgao, "Informante"] = inf
                 res_assigned = pd.concat([exclusive_rows, other_rows], ignore_index=True)
 
+            # ----------- Cálculo de critério e ordenação -----------
             def calcula_criterio(row):
                 if pd.isna(row["Processo"]) or row["Processo"] == "":
                     return ""
@@ -301,11 +319,12 @@ if st.button("Executar Distribuição"):
                                                     ascending=[True, True, False]).reset_index(drop=True)
             res_assigned = res_assigned.drop(columns=["CustomPriority"])
 
+            # ----------- Arquivos principais (pré e pós distribuição) -----------
             pre_geral_filename = f"{numero}_planilha_geral_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx"
             pre_geral_bytes = to_excel_bytes(pre_df)
             res_geral_filename = f"{numero}_planilha_geral_principal_{datetime.now().strftime('%Y%m%d')}.xlsx"
 
-            # === APLICAR FILTROS DE GRUPO NATUREZA E ORGAO ORIGEM POR INFORMANTE ===
+            # ----------- Aplicação dos filtros finais -----------
             df_list = []
             for inf in res_assigned["Informante"].dropna().unique():
                 df_inf = res_assigned[res_assigned["Informante"] == inf].copy()
@@ -326,7 +345,7 @@ if st.button("Executar Distribuição"):
                 res_assigned_filtered = res_assigned_filtered[cols]
             res_geral_bytes = to_excel_bytes(res_assigned_filtered)
 
-            # -------- GERAÇÃO DAS PLANILHAS INDIVIDUAIS --------
+            # ----------- Planilhas individuais -----------
             pre_individual_files = {}
             for inf in pre_df["Informante"].dropna().unique():
                 df_inf = pre_df[pre_df["Informante"] == inf].copy()
@@ -360,6 +379,7 @@ if st.button("Executar Distribuição"):
                     pre_individual_files, res_individual_files,
                     informantes_emails)
 
+        # ---- Chamada principal ----
         processos_file = files_dict["processos"]
         processosmanter_file = files_dict["processosmanter"]
         obs_file = files_dict["observacoes"]
@@ -408,6 +428,7 @@ if st.button("Executar Distribuição"):
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
+        # ----- Envio de e-mails (igual ao seu padrão) -----
         if not test_mode:
             managers_list = [e.strip() for e in managers_emails.split(",") if e.strip()]
             if managers_list:
