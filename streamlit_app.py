@@ -217,7 +217,7 @@ if st.button("Executar Distribuição"):
     required_keys = ["processos", "processosmanter", "observacoes", "disponibilidade"]
     if all(key in files_dict for key in required_keys):
 
-    def run_distribution(
+        def run_distribution(
             processos_file,
             processosmanter_file,
             obs_file,
