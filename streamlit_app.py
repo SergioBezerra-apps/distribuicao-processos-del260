@@ -402,8 +402,8 @@ if st.button("Executar Distribuição"):
                     rej = df_inf[~mask_keep].copy()
                     rej["Informante"] = ""  # volta ao pool
                     rejeitados_parts.append(rej)
-                aceitos_df = pd.concat(aceitos_parts, ignore_index=True)
-                unassigned_df = pd.concat(rejeitados_parts, ignore_index=True)
+                    aceitos_df = pd.concat(aceitos_parts, ignore_index=True)
+                    unassigned_df = pd.concat(rejeitados_parts, ignore_index=True)
         
                 informantes_ordem = list(df_disp["informantes"].str.upper())
                 redistribuidos_df = _redistribute(
