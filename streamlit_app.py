@@ -405,12 +405,12 @@ if st.button("Executar Distribuição"):
                     aceitos_df = pd.concat(aceitos_parts, ignore_index=True)
                     unassigned_df = pd.concat(rejeitados_parts, ignore_index=True)
         
-                informantes_ordem = list(df_disp["informantes"].str.upper())
-                redistribuidos_df = _redistribute(
-                    unassigned_df, informantes_ordem,
-                    filtros_grupo_natureza, filtros_orgao_origem,
-                    exclusive_mode, exclusive_orgao_map
-                )
+                    informantes_ordem = list(df_disp["informantes"].str.upper())
+                    redistribuidos_df = _redistribute(
+                        unassigned_df, informantes_ordem,
+                        filtros_grupo_natureza, filtros_orgao_origem,
+                        exclusive_mode, exclusive_orgao_map
+                    )
                 # ELIMINA QUALQUER UM QUE NÃO FOI DISTRIBUÍDO
                 redistribuidos_df = redistribuidos_df[redistribuidos_df["Informante"] != ""]
         
