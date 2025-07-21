@@ -411,11 +411,11 @@ if st.button("Executar Distribuição"):
                         filtros_grupo_natureza, filtros_orgao_origem,
                         exclusive_mode, exclusive_orgao_map
                     )
-                # ELIMINA QUALQUER UM QUE NÃO FOI DISTRIBUÍDO
-                redistribuidos_df = redistribuidos_df[redistribuidos_df["Informante"] != ""]
-        
-                # Resultado consolidado
-                res_final = pd.concat([aceitos_df, redistribuidos_df], ignore_index=True)
+                    # ELIMINA QUALQUER UM QUE NÃO FOI DISTRIBUÍDO
+                    redistribuidos_df = redistribuidos_df[redistribuidos_df["Informante"] != ""]
+            
+                    # Resultado consolidado
+                    res_final = pd.concat([aceitos_df, redistribuidos_df], ignore_index=True)
         
         
                 
