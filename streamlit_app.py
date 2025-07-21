@@ -138,20 +138,24 @@ def _redistribute(df_unassigned, informantes_ordem,
         natureza = row["Grupo Natureza"]
         orgao = row["Orgão Origem"]
 
-        # 1) Se houver exclusividade válida
         candidatos = []
         if exclusive_mode and orgao in exclusive_orgao_map:
             inf_exc = exclusive_orgao_map[orgao]
             if _accepts(inf_exc, orgao, natureza,
                         filtros_grupo_natureza, filtros_orgao_origem):
                 candidatos = [inf_exc]
+            else:
+                # O informante exclusivo não aceita esta natureza,
+                # volta ao round robin para os demais informantes.
+                for inf in informantes_ordem:
+                    if inf != inf_exc and _accepts(inf, orgao, natureza,
+                                                   filtros_grupo_natureza, filtros_orgao_origem):
+                        candidatos.append(inf)
         else:
-            # 2) Todos que aceitam
             for inf in informantes_ordem:
                 if _accepts(inf, orgao, natureza,
                             filtros_grupo_natureza, filtros_orgao_origem):
                     candidatos.append(inf)
-
         if candidatos:
             idx = rr_indices[natureza] % len(candidatos)
             row["Informante"] = candidatos[idx]
@@ -159,6 +163,7 @@ def _redistribute(df_unassigned, informantes_ordem,
         else:
             row["Informante"] = ""          # continua sem destino
         rows.append(row)
+
 
     return pd.DataFrame(rows)
 
