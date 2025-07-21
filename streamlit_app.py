@@ -123,10 +123,11 @@ def _accepts(inf, orgao, natureza,
 
 def _redistribute(df_unassigned, informantes_ordem,
                   filtros_grupo_natureza, filtros_orgao_origem,
-                  exclusive_mode, exclusive_orgao_map):
+                  exclusive_mode, exclusive_orgao_map,
+                  informantes_grupo_a, informantes_grupo_b, origens_especiais):
     """
-    Redispõe processos sem destino, mantendo round‑robin por natureza e
-    respeitando exclusividades válidas.
+    Redispõe processos sem destino, mantendo round‑robin por natureza,
+    respeitando grupos A/B e exclusividades válidas.
     """
     if df_unassigned.empty:
         return df_unassigned
@@ -138,32 +139,35 @@ def _redistribute(df_unassigned, informantes_ordem,
         natureza = row["Grupo Natureza"]
         orgao = row["Orgão Origem"]
 
+        # 1. Define grupo de informantes conforme o órgão
+        if orgao in origens_especiais:
+            informantes_do_grupo = informantes_grupo_a
+        else:
+            informantes_do_grupo = informantes_grupo_b
+
         candidatos = []
+        # 2. Trata exclusividade: se o órgão tem informante exclusivo
         if exclusive_mode and orgao in exclusive_orgao_map:
             inf_exc = exclusive_orgao_map[orgao]
-            if _accepts(inf_exc, orgao, natureza,
-                        filtros_grupo_natureza, filtros_orgao_origem):
+            if _accepts(inf_exc, orgao, natureza, filtros_grupo_natureza, filtros_orgao_origem):
                 candidatos = [inf_exc]
             else:
-                # O informante exclusivo não aceita esta natureza,
-                # volta ao round robin para os demais informantes.
-                for inf in informantes_ordem:
-                    if inf != inf_exc and _accepts(inf, orgao, natureza,
-                                                   filtros_grupo_natureza, filtros_orgao_origem):
+                for inf in informantes_do_grupo:
+                    if inf != inf_exc and _accepts(inf, orgao, natureza, filtros_grupo_natureza, filtros_orgao_origem):
                         candidatos.append(inf)
         else:
-            for inf in informantes_ordem:
-                if _accepts(inf, orgao, natureza,
-                            filtros_grupo_natureza, filtros_orgao_origem):
+            for inf in informantes_do_grupo:
+                if _accepts(inf, orgao, natureza, filtros_grupo_natureza, filtros_orgao_origem):
                     candidatos.append(inf)
+
+        # 3. Distribuição round-robin
         if candidatos:
             idx = rr_indices[natureza] % len(candidatos)
             row["Informante"] = candidatos[idx]
             rr_indices[natureza] += 1
         else:
-            row["Informante"] = ""          # continua sem destino
+            row["Informante"] = ""  # continua sem destino
         rows.append(row)
-
 
     return pd.DataFrame(rows)
 
@@ -416,10 +420,12 @@ if st.button("Executar Distribuição"):
         
                     informantes_ordem = list(df_disp["informantes"].str.upper())
                     redistribuidos_df = _redistribute(
-                        unassigned_df, informantes_ordem,
-                        filtros_grupo_natureza, filtros_orgao_origem,
-                        exclusive_mode, exclusive_orgao_map
-                    )
+                            unassigned_df, informantes_ordem,
+                            filtros_grupo_natureza, filtros_orgao_origem,
+                            exclusive_mode, exclusive_orgao_map,
+                            informantes_grupo_a, informantes_grupo_b, origens_especiais
+                        )
+
                     # ELIMINA QUALQUER UM QUE NÃO FOI DISTRIBUÍDO
                     redistribuidos_df = redistribuidos_df[redistribuidos_df["Informante"] != ""]
             
