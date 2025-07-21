@@ -458,10 +458,10 @@ if st.button("Executar Distribuição"):
                 filename_inf = f"{inf.replace(' ', '_')}_{numero}_principal_{datetime.now().strftime('%Y%m%d')}.xlsx"
                 res_individual_files[inf] = to_excel_bytes(df_inf)
         
-         return (pre_geral_filename, pre_geral_bytes,
-                res_geral_filename, res_geral_bytes,
-                pre_individual_files, res_individual_files,
-                informantes_emails)
+             return (pre_geral_filename, pre_geral_bytes,
+                    res_geral_filename, res_geral_bytes,
+                    pre_individual_files, res_individual_files,
+                    informantes_emails)
 
 
         # ---- Chamada principal ----
