@@ -140,7 +140,7 @@ def _redistribute(df_unassigned, informantes_ordem,
 
         # 1) Se houver exclusividade válida
         candidatos = []
-        if exclusive_mode and exclusive_orgao_map.get(orgao):
+        if exclusive_mode and orgao in exclusive_orgao_map:
             inf_exc = exclusive_orgao_map[orgao]
             if _accepts(inf_exc, orgao, natureza,
                         filtros_grupo_natureza, filtros_orgao_origem):
@@ -248,11 +248,15 @@ if all(key in files_dict for key in ["processos", "processosmanter", "observacoe
     exclusive_orgao_map = {}
     if exclusive_mode:
         for orgao in orgaos_origem_options:
-            exclusive_orgao_map[orgao] = st.selectbox(
+            inf_exclusivo = st.selectbox(
                 f"Selecione o informante responsável exclusivamente por '{orgao}'",
                 options=["(não atribuir exclusivamente)"] + list(informantes_principais),
                 key=f"selectbox_exclusivo_{orgao.replace(' ', '_')}"
             )
+        # Só inclui se realmente houver um informante selecionado!
+            if inf_exclusivo != "(não atribuir exclusivamente)":
+                exclusive_orgao_map[orgao] = inf_exclusivo
+
 
     st.markdown("### Filtros de Grupo Natureza e Orgão Origem para Processos Principais (por informante)")
     for inf in informantes_principais:
