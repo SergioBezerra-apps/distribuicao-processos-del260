@@ -104,6 +104,64 @@ def create_zip_from_dict(file_dict):
             zip_file.writestr(filename, file_bytes)
     zip_buffer.seek(0)
     return zip_buffer.getvalue()
+    # =============================================================================
+# Funções auxiliares NOVAS
+# =============================================================================
+def _accepts(inf, orgao, natureza,
+             filtros_grupo_natureza, filtros_orgao_origem):
+    """
+    True se *inf* aceita (órgão, natureza) conforme filtros da interface.
+    """
+    grupos_ok = filtros_grupo_natureza.get(inf, [])
+    orgaos_ok = filtros_orgao_origem.get(inf, [])
+    if grupos_ok and natureza not in grupos_ok:
+        return False
+    if orgaos_ok and orgao not in orgaos_ok:
+        return False
+    return True
+
+
+def _redistribute(df_unassigned, informantes_ordem,
+                  filtros_grupo_natureza, filtros_orgao_origem,
+                  exclusive_mode, exclusive_orgao_map):
+    """
+    Redispõe processos sem destino, mantendo round‑robin por natureza e
+    respeitando exclusividades válidas.
+    """
+    if df_unassigned.empty:
+        return df_unassigned
+
+    rr_indices = {gn: 0 for gn in df_unassigned["Grupo Natureza"].unique()}
+    rows = []
+
+    for _, row in df_unassigned.iterrows():
+        natureza = row["Grupo Natureza"]
+        orgao = row["Orgão Origem"]
+
+        # 1) Se houver exclusividade válida
+        candidatos = []
+        if exclusive_mode and exclusive_orgao_map.get(orgao):
+            inf_exc = exclusive_orgao_map[orgao]
+            if _accepts(inf_exc, orgao, natureza,
+                        filtros_grupo_natureza, filtros_orgao_origem):
+                candidatos = [inf_exc]
+        else:
+            # 2) Todos que aceitam
+            for inf in informantes_ordem:
+                if _accepts(inf, orgao, natureza,
+                            filtros_grupo_natureza, filtros_orgao_origem):
+                    candidatos.append(inf)
+
+        if candidatos:
+            idx = rr_indices[natureza] % len(candidatos)
+            row["Informante"] = candidatos[idx]
+            rr_indices[natureza] += 1
+        else:
+            row["Informante"] = ""          # continua sem destino
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
 
 # =============================================================================
 # Interface principal
@@ -331,32 +389,45 @@ if st.button("Executar Distribuição"):
             res_assigned = res_assigned.sort_values(by=["Informante", "CustomPriority", "Dias no Orgão"],
                                                     ascending=[True, True, False]).reset_index(drop=True)
             res_assigned = res_assigned.drop(columns=["CustomPriority"])
+                    # ===== FILTROS POR INFORMANTE + REDISTRIBUIÇÃO AUTOMÁTICA =====
+            aceitos_parts, rejeitados_parts = [], []
+            for inf in res_assigned["Informante"].dropna().unique():
+                    df_inf = res_assigned[res_assigned["Informante"] == inf].copy()
+                    mask_keep = df_inf.apply(
+                        lambda r: _accepts(
+                            inf, r["Orgão Origem"], r["Grupo Natureza"],
+                            filtros_grupo_natureza, filtros_orgao_origem
+                        ), axis=1)
+                    aceitos_parts.append(df_inf[mask_keep])
+                    rej = df_inf[~mask_keep].copy()
+                    rej["Informante"] = ""  # volta ao pool
+                    rejeitados_parts.append(rej)
+                aceitos_df = pd.concat(aceitos_parts, ignore_index=True)
+                unassigned_df = pd.concat(rejeitados_parts, ignore_index=True)
         
+                informantes_ordem = list(df_disp["informantes"].str.upper())
+                redistribuidos_df = _redistribute(
+                    unassigned_df, informantes_ordem,
+                    filtros_grupo_natureza, filtros_orgao_origem,
+                    exclusive_mode, exclusive_orgao_map
+                )
+                # ELIMINA QUALQUER UM QUE NÃO FOI DISTRIBUÍDO
+                redistribuidos_df = redistribuidos_df[redistribuidos_df["Informante"] != ""]
+        
+                # Resultado consolidado
+                res_final = pd.concat([aceitos_df, redistribuidos_df], ignore_index=True)
+        
+        
+                
             # 6. Geração das planilhas gerais
             pre_geral_filename = f"{numero}_planilha_geral_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx"
             pre_geral_bytes = to_excel_bytes(pre_df)
             res_geral_filename = f"{numero}_planilha_geral_principal_{datetime.now().strftime('%Y%m%d')}.xlsx"
-        
-            # 7. Aplicação dos filtros por informante apenas para a exportação/relatórios
-            df_list = []
-            for inf in res_assigned["Informante"].dropna().unique():
-                df_inf = res_assigned[res_assigned["Informante"] == inf].copy()
-                grupos_escolhidos = filtros_grupo_natureza.get(inf, [])
-                orgaos_escolhidos = filtros_orgao_origem.get(inf, [])
-                if grupos_escolhidos:
-                    df_inf = df_inf[df_inf["Grupo Natureza"].isin(grupos_escolhidos)]
-                if orgaos_escolhidos:
-                    df_inf = df_inf[df_inf["Orgão Origem"].isin(orgaos_escolhidos)]
-                df_list.append(df_inf)
-            res_assigned_filtered = pd.concat(df_list, ignore_index=True)
-        
-            res_assigned_filtered = res_assigned_filtered.drop(columns=["Descrição Informação", "Funcionário Informação"], errors='ignore')
-            cols = res_assigned_filtered.columns.tolist()
-            if "Critério" in cols:
-                cols.remove("Critério")
-                cols.insert(2, "Critério")
-                res_assigned_filtered = res_assigned_filtered[cols]
-            res_geral_bytes = to_excel_bytes(res_assigned_filtered)
+            # 7. Planilha “principal” usa o dataframe já filtrado e redistribuído
+            res_geral_bytes = to_excel_bytes(
+                res_final.drop(columns=["Descrição Informação", "Funcionário Informação"], errors="ignore")
+            )
+
         
             # 8. Planilhas individuais por informante
             pre_individual_files = {}
@@ -371,8 +442,8 @@ if st.button("Executar Distribuição"):
                 pre_individual_files[inf] = to_excel_bytes(df_inf)
         
             res_individual_files = {}
-            for inf in res_assigned["Informante"].dropna().unique():
-                df_inf = res_assigned[res_assigned["Informante"] == inf].copy()
+            for inf in res_final["Informante"].dropna().unique():
+                df_inf = res_final[res_final["Informante"] == inf].copy()
                 grupos_escolhidos = filtros_grupo_natureza.get(inf, [])
                 orgaos_escolhidos = filtros_orgao_origem.get(inf, [])
                 if grupos_escolhidos:
@@ -387,12 +458,11 @@ if st.button("Executar Distribuição"):
                 filename_inf = f"{inf.replace(' ', '_')}_{numero}_principal_{datetime.now().strftime('%Y%m%d')}.xlsx"
                 res_individual_files[inf] = to_excel_bytes(df_inf)
         
-            return (
-                pre_geral_filename, pre_geral_bytes,
+         return (pre_geral_filename, pre_geral_bytes,
                 res_geral_filename, res_geral_bytes,
                 pre_individual_files, res_individual_files,
-                informantes_emails
-            )
+                informantes_emails)
+
 
         # ---- Chamada principal ----
         processos_file = files_dict["processos"]
