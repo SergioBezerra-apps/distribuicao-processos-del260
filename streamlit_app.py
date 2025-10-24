@@ -656,5 +656,6 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
 
 else:
     st.info("Faça o upload de: processos.xlsx, processosmanter.xlsx, observacoes.xlsx e disponibilidade_equipe.xlsx.")
-```
+
+
 
