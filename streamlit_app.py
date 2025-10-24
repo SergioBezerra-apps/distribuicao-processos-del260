@@ -1,4 +1,3 @@
-```python
 # -*- coding: utf-8 -*-
 # App: Distribuição de Processos da Del. 260 — v2 (roteamento por par + exclusividade + “somente exclusivos”)
 
@@ -658,3 +657,4 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
 else:
     st.info("Faça o upload de: processos.xlsx, processosmanter.xlsx, observacoes.xlsx e disponibilidade_equipe.xlsx.")
 ```
+
