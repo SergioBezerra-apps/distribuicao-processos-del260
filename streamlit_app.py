@@ -1,5 +1,6 @@
-
+# -*- coding: utf-8 -*-
 # App: Distribuição de Processos da Del. 260
+
 
 import os
 import io
@@ -122,9 +123,11 @@ def _accepts(inf, orgao, natureza, filtros_grupo_natureza, filtros_orgao_origem)
 def _apply_routing_rules(df_pool: pd.DataFrame, rules: list, filtros_grupo_natureza, filtros_orgao_origem):
     """
     Aplica regras por (Natureza, Órgão) → Informante, com 'Exclusiva?' opcional.
-    - Exclusiva? True => Locked=True (ignora filtros depois).
-    - Exclusiva? False => Locked=False (ainda passa pelos filtros).
-    Retorna: (df_assigned, df_remaining) com coluna 'Locked' presente.
+    Para cada processo, escolhe a regra MAIS ESPECÍFICA:
+      - +1 se Natureza é específica (≠ "(QUALQUER)")
+      - +1 se Órgão é específico (≠ "(QUALQUER)")
+    Empate: vence a primeira na ordem fornecida.
+    Exclusiva? True => Locked=True (ignora filtros depois).
     """
     if df_pool.empty:
         df_empty = df_pool.copy()
@@ -137,33 +140,43 @@ def _apply_routing_rules(df_pool: pd.DataFrame, rules: list, filtros_grupo_natur
         df_pool["Locked"] = False
 
     assigned_rows, remaining_rows = [], []
+
     for _, row in df_pool.iterrows():
         natureza = str(row["Grupo Natureza"])
-        orgao = str(row["Orgão Origem"])
-        matched = False
+        orgao    = str(row["Orgão Origem"])
 
-        for r in rules:
-            inf = r["Informante"]
-            nat_rule = r["Grupo Natureza"]
-            org_rule = r["Orgão Origem"]
-            exclusiva = bool(r.get("Exclusiva?", False))
+        best = None   # (score, idx, rule_dict)
+        for idx, r in enumerate(rules):
+            inf       = r["Informante"]
+            nat_rule  = r["Grupo Natureza"]
+            org_rule  = r["Orgão Origem"]
 
             ok_nat = (nat_rule == "(QUALQUER)") or (nat_rule == natureza)
             ok_org = (org_rule == "(QUALQUER)") or (org_rule == orgao)
+            if not (ok_nat and ok_org):
+                continue
 
-            if ok_nat and ok_org:
-                if exclusiva or _accepts(inf, orgao, natureza, filtros_grupo_natureza, filtros_orgao_origem):
-                    new_row = row.copy()
-                    new_row["Informante"] = inf
-                    new_row["Locked"] = exclusiva
-                    assigned_rows.append(new_row)
-                    matched = True
-                    break  # primeira regra válida vence
+            score = (0 if nat_rule == "(QUALQUER)" else 1) + (0 if org_rule == "(QUALQUER)" else 1)
+            cand  = (score, idx, r)
+            if (best is None) or (cand[0] > best[0]) or (cand[0] == best[0] and cand[1] < best[1]):
+                best = cand
 
-        if not matched:
-            remaining_rows.append(row)
+        if best is None:
+            remaining_rows.append(row)  # nenhuma regra casou
+        else:
+            _, _, rbest = best
+            inf_best    = rbest["Informante"]
+            exclusiva   = bool(rbest.get("Exclusiva?", False))
 
-    df_assigned = pd.DataFrame(assigned_rows) if assigned_rows else pd.DataFrame(columns=df_pool.columns)
+            if exclusiva or _accepts(inf_best, orgao, natureza, filtros_grupo_natureza, filtros_orgao_origem):
+                new_row = row.copy()
+                new_row["Informante"] = inf_best
+                new_row["Locked"]     = exclusiva
+                assigned_rows.append(new_row)
+            else:
+                remaining_rows.append(row)  # regra não-exclusiva barrada pelo filtro
+
+    df_assigned  = pd.DataFrame(assigned_rows)  if assigned_rows  else pd.DataFrame(columns=df_pool.columns)
     df_remaining = pd.DataFrame(remaining_rows) if remaining_rows else pd.DataFrame(columns=df_pool.columns)
     for d in (df_assigned, df_remaining):
         if "Locked" not in d.columns:
@@ -174,7 +187,7 @@ def _redistribute(df_unassigned: pd.DataFrame,
                   informantes_grupo_a, informantes_grupo_b, origens_especiais,
                   filtros_grupo_natureza, filtros_orgao_origem,
                   only_locked_map) -> pd.DataFrame:
-    """Round-robin por natureza, respeitando grupos A/B, whitelist, e ignorando informantes 'somente exclusivos'."""
+    """Round-robin por natureza, respeitando grupos A/B, whitelist e ignorando informantes 'somente exclusivos'."""
     if df_unassigned.empty:
         return df_unassigned
     df_unassigned = df_unassigned.copy()
@@ -484,7 +497,10 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             # 6) APLICA REGRAS (antes dos filtros) — coleta TODAS as linhas e normaliza
             rules_list = []
             rules_df_in = rules_df
-            def _norm(x): return (str(x).strip().upper() if pd.notna(x) else "")
+
+            def _norm(x):
+                return (str(x).strip().upper() if pd.notna(x) else "")
+
             if rules_df_in is not None and not rules_df_in.empty:
                 tmp = rules_df_in.copy()
                 tmp["Informante"]     = tmp["Informante"].map(_norm)
@@ -546,7 +562,6 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             if not redistribuidos_df.empty:
                 mask_bad = redistribuidos_df["Informante"].map(lambda x: bool(only_locked_map.get(x, False)))
                 if mask_bad.any():
-                    # devolve ao pool (aqui descartamos; alternativa: re-rodar redistribuição)
                     redistribuidos_df = redistribuidos_df[~mask_bad]
 
             redistribuidos_df = redistribuidos_df[redistribuidos_df["Informante"] != ""]
@@ -685,4 +700,3 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
 
 else:
     st.info("Faça o upload de: processos.xlsx, processosmanter.xlsx, observacoes.xlsx e disponibilidade_equipe.xlsx.")
-
