@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
-# App: Distribuição de Processos da Del. 260 — v2 (roteamento por par + exclusividade + “somente exclusivos”)
+
+# App: Distribuição de Processos da Del. 260
 
 import os
 import io
@@ -12,7 +12,7 @@ from email.message import EmailMessage
 from xlsxwriter.utility import xl_col_to_name
 
 # =============================================================================
-# Utilitários de e-mail (usa st.secrets / env; se ausentes, não envia)
+# E-mail (usa st.secrets / env; se ausentes, não envia)
 # =============================================================================
 
 def _get_mail_creds():
@@ -106,11 +106,11 @@ def create_zip_from_dict(file_dict: dict) -> bytes:
     return zip_buffer.getvalue()
 
 # =============================================================================
-# Core helpers: filtros, regras (com exclusividade), redistribuição, prevenção Top-200
+# Core helpers
 # =============================================================================
 
 def _accepts(inf, orgao, natureza, filtros_grupo_natureza, filtros_orgao_origem) -> bool:
-    """Whitelist: vazio = aceita tudo. Se marcado, aceita somente o que está marcado."""
+    """Whitelist: vazio = aceita tudo. Se marcado, aceita somente o que foi marcado (E para natureza/órgão)."""
     grupos_ok = filtros_grupo_natureza.get(inf, [])
     orgaos_ok = filtros_orgao_origem.get(inf, [])
     if grupos_ok and natureza not in grupos_ok:
@@ -147,8 +147,10 @@ def _apply_routing_rules(df_pool: pd.DataFrame, rules: list, filtros_grupo_natur
             nat_rule = r["Grupo Natureza"]
             org_rule = r["Orgão Origem"]
             exclusiva = bool(r.get("Exclusiva?", False))
-            ok_nat = (nat_rule == "(qualquer)") or (nat_rule == natureza)
-            ok_org = (org_rule == "(qualquer)") or (org_rule == orgao)
+
+            ok_nat = (nat_rule == "(QUALQUER)") or (nat_rule == natureza)
+            ok_org = (org_rule == "(QUALQUER)") or (org_rule == orgao)
+
             if ok_nat and ok_org:
                 if exclusiva or _accepts(inf, orgao, natureza, filtros_grupo_natureza, filtros_orgao_origem):
                     new_row = row.copy()
@@ -170,8 +172,9 @@ def _apply_routing_rules(df_pool: pd.DataFrame, rules: list, filtros_grupo_natur
 
 def _redistribute(df_unassigned: pd.DataFrame,
                   informantes_grupo_a, informantes_grupo_b, origens_especiais,
-                  filtros_grupo_natureza, filtros_orgao_origem) -> pd.DataFrame:
-    """Round-robin por natureza, respeitando grupos A/B e whitelist por informante."""
+                  filtros_grupo_natureza, filtros_orgao_origem,
+                  only_locked_map) -> pd.DataFrame:
+    """Round-robin por natureza, respeitando grupos A/B, whitelist, e ignorando informantes 'somente exclusivos'."""
     if df_unassigned.empty:
         return df_unassigned
     df_unassigned = df_unassigned.copy()
@@ -181,8 +184,14 @@ def _redistribute(df_unassigned: pd.DataFrame,
         natureza = row["Grupo Natureza"]
         orgao = row["Orgão Origem"]
         informantes_do_grupo = informantes_grupo_a if orgao in origens_especiais else informantes_grupo_b
-        candidatos = [inf for inf in informantes_do_grupo
-                      if _accepts(inf, orgao, natureza, filtros_grupo_natureza, filtros_orgao_origem)]
+
+        candidatos = []
+        for inf in informantes_do_grupo:
+            if bool(only_locked_map.get(inf, False)):  # bloqueia quem marcou "somente exclusivos"
+                continue
+            if _accepts(inf, orgao, natureza, filtros_grupo_natureza, filtros_orgao_origem):
+                candidatos.append(inf)
+
         if candidatos:
             idx = rr_indices[natureza] % len(candidatos)
             row["Informante"] = candidatos[idx]
@@ -212,12 +221,12 @@ def _apply_prevention_top200(res_final: pd.DataFrame, df_prev_map: pd.DataFrame,
         prev.columns = [c.strip() for c in prev.columns]
         if {"Processo", "Informante"}.issubset(set(prev.columns)):
             prev["Processo"] = prev["Processo"].astype(str).str.strip()
-            prev["Informante"] = prev["Informante"].astype(str).str.strip()
+            prev["Informante"] = prev["Informante"].astype(str).str.strip().str.upper()
             prev_map = dict(zip(prev["Processo"], prev["Informante"]))
 
     for inf in base["Informante"].dropna().unique():
         df_inf = base[base["Informante"] == inf].copy()
-        # aplica whitelist do inf (opcional; para listas individuais)
+        # aplica whitelist do inf (para listas individuais)
         grupos_escolhidos = filtros_grupo_natureza.get(inf, [])
         orgaos_escolhidos = filtros_orgao_origem.get(inf, [])
         if grupos_escolhidos:
@@ -231,7 +240,7 @@ def _apply_prevention_top200(res_final: pd.DataFrame, df_prev_map: pd.DataFrame,
             df_inf["preferido"] = 0
 
         preferidos = df_inf[df_inf["preferido"] == 1].sort_values(by=["CustomPriority", "Dias no Orgão"], ascending=[True, False])
-        nao_pref = df_inf[df_inf["preferido"] == 0].sort_values(by=["CustomPriority", "Dias no Orgão"], ascending=[True, False])
+        nao_pref   = df_inf[df_inf["preferido"] == 0].sort_values(by=["CustomPriority", "Dias no Orgão"], ascending=[True, False])
 
         df_top = pd.concat([preferidos, nao_pref], ignore_index=True).head(200)
         df_top = df_top.drop(columns=["CustomPriority", "preferido"], errors="ignore")
@@ -240,10 +249,10 @@ def _apply_prevention_top200(res_final: pd.DataFrame, df_prev_map: pd.DataFrame,
     return out
 
 # =============================================================================
-# Interface principal
+# UI
 # =============================================================================
 
-st.title("Distribuição de Processos da Del. 260 — v2")
+st.title("Distribuição de Processos da Del. 260")
 
 if "numero" not in st.session_state:
     st.session_state.numero = "184"
@@ -291,55 +300,53 @@ managers_emails = st.text_input(
 )
 
 # -----------------------------------------------------------------------------
-# Bloco condicional: somente após carregar os 4 arquivos principais
+# Somente após carregar os 4 arquivos principais
 # -----------------------------------------------------------------------------
 
 if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", "disponibilidade"]):
-    # Carrega dados básicos
+    # ====== Leitura e normalização UPPER para casar valores ======
     df_proc = pd.read_excel(files_dict["processos"])
     df_proc.columns = df_proc.columns.str.strip()
+    # Normaliza campos categóricos usados nas comparações
+    if "Grupo Natureza" in df_proc.columns:
+        df_proc["Grupo Natureza"] = df_proc["Grupo Natureza"].astype(str).str.strip().str.upper()
+    if "Orgão Origem" in df_proc.columns:
+        df_proc["Orgão Origem"] = df_proc["Orgão Origem"].astype(str).str.strip().str.upper()
+
     df_manter = pd.read_excel(files_dict["processosmanter"])
     df_manter.columns = df_manter.columns.str.strip()
-    processos_validos = df_manter["Processo"].dropna().unique()
+    processos_validos = df_manter["Processo"].dropna().astype(str).unique()
+    df_proc["Processo"] = df_proc["Processo"].astype(str)
     df_proc = df_proc[df_proc["Processo"].isin(processos_validos)]
-    df_proc = df_proc[df_proc["Tipo Processo"] == "Principal"]
+    if "Tipo Processo" in df_proc.columns:
+        df_proc = df_proc[df_proc["Tipo Processo"].astype(str).str.upper().str.strip() == "PRINCIPAL"]
 
     df_disp = pd.read_excel(files_dict["disponibilidade"])
     df_disp.columns = df_disp.columns.str.strip()
     if "disponibilidade" in df_disp.columns:
         df_disp = df_disp[df_disp["disponibilidade"].astype(str).str.lower() == "sim"].copy()
+    # Normaliza nomes de informantes para UPPER
+    df_disp["informantes"] = df_disp["informantes"].astype(str).str.strip().str.upper()
 
     informantes_principais = sorted(df_disp["informantes"].dropna().unique())
     grupo_natureza_options = sorted(df_proc["Grupo Natureza"].dropna().unique())
-    orgaos_origem_options = sorted(df_proc["Orgão Origem"].dropna().unique())
+    orgaos_origem_options  = sorted(df_proc["Orgão Origem"].dropna().unique())
 
-    # ========== UI: Filtros (whitelist) por informante ==========
+    # ========== Filtros (whitelist) por informante ==========
     st.markdown("### Filtros (whitelist) por informante")
     st.caption("Vazio = aceita tudo. Se marcar Natureza e Órgão, exige interseção (E).")
     filtros_grupo_natureza, filtros_orgao_origem = {}, {}
-    cols = st.columns(2)
-    with cols[0]:
-        for inf in informantes_principais[::2]:
-            filtros_grupo_natureza[inf] = st.multiselect(
-                f"Naturezas aceitas — {inf}",
-                options=grupo_natureza_options, key=f"gn_{inf.replace(' ','_')}"
-            )
-            filtros_orgao_origem[inf] = st.multiselect(
-                f"Órgãos aceitos — {inf}",
-                options=orgaos_origem_options, key=f"org_{inf.replace(' ','_')}"
-            )
-    with cols[1]:
-        for inf in informantes_principais[1::2]:
-            filtros_grupo_natureza[inf] = st.multiselect(
-                f"Naturezas aceitas — {inf}",
-                options=grupo_natureza_options, key=f"gn_{inf.replace(' ','_')}"
-            )
-            filtros_orgao_origem[inf] = st.multiselect(
-                f"Órgãos aceitos — {inf}",
-                options=orgaos_origem_options, key=f"org_{inf.replace(' ','_')}"
-            )
+    for inf in informantes_principais:
+        filtros_grupo_natureza[inf] = st.multiselect(
+            f"Naturezas aceitas — {inf}",
+            options=grupo_natureza_options, key=f"gn_{inf.replace(' ','_')}"
+        )
+        filtros_orgao_origem[inf] = st.multiselect(
+            f"Órgãos aceitos — {inf}",
+            options=orgaos_origem_options, key=f"org_{inf.replace(' ','_')}"
+        )
 
-    # ========== UI: Preferência “somente exclusivos (Locked)” por informante ==========
+    # ========== Preferências: somente exclusivos (Locked) ==========
     st.markdown("### Preferências por informante")
     st.caption("Marque para que o informante receba apenas itens de regras exclusivas (Locked).")
     only_locked_map = st.session_state.get("only_locked_map", {})
@@ -349,12 +356,12 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
         only_locked_map[inf] = val
     st.session_state["only_locked_map"] = only_locked_map
 
-    # ========== UI: Regras de roteamento com Exclusiva? ==========
+    # ========== Regras de roteamento com Exclusiva? ==========
     st.markdown("### Regras de roteamento por (Natureza, Órgão) → Informante")
-    st.caption("Use '(qualquer)' como curinga. Marque 'Exclusiva?' para reservar o par ao informante indicado.")
-    natureza_opts = ["(qualquer)"] + grupo_natureza_options
-    orgao_opts = ["(qualquer)"] + orgaos_origem_options
-    inf_opts = list(informantes_principais)
+    st.caption("Use '(QUALQUER)' como curinga. Marque 'Exclusiva?' para reservar o par ao informante indicado.")
+    natureza_opts = ["(QUALQUER)"] + grupo_natureza_options
+    orgao_opts    = ["(QUALQUER)"] + orgaos_origem_options
+    inf_opts      = list(informantes_principais)
 
     if "rules_state_v2" not in st.session_state:
         st.session_state["rules_state_v2"] = pd.DataFrame(columns=["Informante", "Grupo Natureza", "Orgão Origem", "Exclusiva?"])
@@ -379,12 +386,18 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
                              filtros_grupo_natureza, filtros_orgao_origem,
                              rules_df=None, prev_file=None):
 
-            # 1) Leitura e pré-processamento
+            # 1) Leitura base (novamente, agora para o fluxo completo) e normalização
             df = pd.read_excel(processos_file); df.columns = df.columns.str.strip()
+            for col in ["Grupo Natureza", "Orgão Origem"]:
+                if col in df.columns:
+                    df[col] = df[col].astype(str).str.strip().str.upper()
+            df["Processo"] = df["Processo"].astype(str)
+
             df_manter = pd.read_excel(processosmanter_file); df_manter.columns = df_manter.columns.str.strip()
-            processos_validos = df_manter["Processo"].dropna().unique()
+            processos_validos = df_manter["Processo"].dropna().astype(str).unique()
             df = df[df["Processo"].isin(processos_validos)]
-            df = df[df["Tipo Processo"] == "Principal"]
+            if "Tipo Processo" in df.columns:
+                df = df[df["Tipo Processo"].astype(str).str.upper().str.strip() == "PRINCIPAL"]
 
             required_cols = [
                 "Processo", "Grupo Natureza", "Orgão Origem", "Dias no Orgão",
@@ -392,7 +405,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             ]
             df = df[required_cols]
             df["Descrição Informação"] = df["Descrição Informação"].astype(str).str.strip().str.lower()
-            df["Funcionário Informação"] = df["Funcionário Informação"].astype(str).str.strip()
+            df["Funcionário Informação"] = df["Funcionário Informação"].astype(str).str.strip().str.upper()
 
             df_obs = pd.read_excel(obs_file); df_obs.columns = df_obs.columns.str.strip()
             df = pd.merge(df, df_obs[["Processo", "Obs", "Data Obs"]], on="Processo", how="left")
@@ -419,7 +432,8 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             df_disp_local = pd.read_excel(disp_file); df_disp_local.columns = df_disp_local.columns.str.strip()
             if "disponibilidade" in df_disp_local.columns:
                 df_disp_local = df_disp_local[df_disp_local["disponibilidade"].astype(str).str.lower() == "sim"].copy()
-            informantes_emails = dict(zip(df_disp_local["informantes"].str.upper(), df_disp_local["email"]))
+            df_disp_local["informantes"] = df_disp_local["informantes"].astype(str).str.strip().str.upper()
+            informantes_emails = dict(zip(df_disp_local["informantes"], df_disp_local["email"]))
 
             informantes_grupo_a = [
                 "ALESSANDRO RIBEIRO RIOS", "ANDRE LUIZ BREIA",
@@ -429,8 +443,10 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
                 "LUCIA MARIA FELIPE DA SILVA", "MONICA ARANHA GOMES DO NASCIMENTO",
                 "RODRIGO SILVEIRA BARRETO", "JOSÉ CARLOS NUNES"
             ]
-            informantes_grupo_a = [inf for inf in informantes_grupo_a if inf in (inf.upper() for inf in df_disp_local["informantes"].str.upper())]
-            informantes_grupo_b = [inf for inf in informantes_grupo_b if inf in (inf.upper() for inf in df_disp_local["informantes"].str.upper())]
+            # mantém apenas os que estão disponíveis
+            available = set(df_disp_local["informantes"])
+            informantes_grupo_a = [inf for inf in informantes_grupo_a if inf in available]
+            informantes_grupo_b = [inf for inf in informantes_grupo_b if inf in available]
             origens_especiais = ["SEC EST POLICIA MILITAR", "SEC EST DEFESA CIVIL"]
 
             # 4) Round-robin base (A/B)
@@ -465,18 +481,24 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             res_assigned = res_assigned.sort_values(by=["Informante", "CustomPriority", "Dias no Orgão"],
                                                     ascending=[True, True, False]).reset_index(drop=True)
 
-            # 6) APLICA REGRAS (antes dos filtros)
+            # 6) APLICA REGRAS (antes dos filtros) — coleta TODAS as linhas e normaliza
             rules_list = []
-            if rules_df is not None and not rules_df.empty:
-                tmp = rules_df.fillna("").copy()
+            rules_df_in = rules_df
+            def _norm(x): return (str(x).strip().upper() if pd.notna(x) else "")
+            if rules_df_in is not None and not rules_df_in.empty:
+                tmp = rules_df_in.copy()
+                tmp["Informante"]     = tmp["Informante"].map(_norm)
+                tmp["Grupo Natureza"] = tmp["Grupo Natureza"].map(lambda v: "(QUALQUER)" if str(v).strip()=="" else _norm(v))
+                tmp["Orgão Origem"]   = tmp["Orgão Origem"].map(lambda v: "(QUALQUER)" if str(v).strip()=="" else _norm(v))
+                tmp = tmp[tmp["Informante"] != ""]
                 for _, r in tmp.iterrows():
-                    if str(r.get("Informante", "")).strip():
-                        rules_list.append({
-                            "Informante": str(r["Informante"]).strip(),
-                            "Grupo Natureza": str(r.get("Grupo Natureza", "(qualquer)")).strip() or "(qualquer)",
-                            "Orgão Origem": str(r.get("Orgão Origem", "(qualquer)")).strip() or "(qualquer)",
-                            "Exclusiva?": bool(r.get("Exclusiva?", False))
-                        })
+                    rules_list.append({
+                        "Informante": r["Informante"],
+                        "Grupo Natureza": r["Grupo Natureza"],
+                        "Orgão Origem": r["Orgão Origem"],
+                        "Exclusiva?": bool(r.get("Exclusiva?", False))
+                    })
+
             assigned_by_rules, rem_after_rules = _apply_routing_rules(
                 res_assigned, rules_list, filtros_grupo_natureza, filtros_orgao_origem
             )
@@ -484,7 +506,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             if "Locked" not in res_assigned2.columns:
                 res_assigned2["Locked"] = False
 
-            # 7) FILTROS (whitelist) por informante + preferência “somente exclusivos”
+            # 7) FILTROS (whitelist) + "somente exclusivos"
             only_locked_map = st.session_state.get("only_locked_map", {})
             aceitos_parts, rejeitados_parts = [], []
             for inf in res_assigned2["Informante"].dropna().unique():
@@ -509,17 +531,24 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             aceitos_df = pd.concat(aceitos_parts, ignore_index=True) if aceitos_parts else pd.DataFrame(columns=res_assigned2.columns)
             unassigned_df = pd.concat(rejeitados_parts, ignore_index=True) if rejeitados_parts else pd.DataFrame(columns=res_assigned2.columns)
 
-            # 8) Redistribuição do restante (não Locked)
+            # 8) Redistribuição do restante (não Locked) — ignora "somente exclusivos"
             informantes_grupo_a_upper = [s.upper() for s in informantes_grupo_a]
             informantes_grupo_b_upper = [s.upper() for s in informantes_grupo_b]
-            # normalizar nomes para upper (coerente com df_disp)
             aceitos_df["Informante"] = aceitos_df["Informante"].astype(str).str.upper()
             unassigned_df["Informante"] = unassigned_df["Informante"].astype(str).str.upper()
 
             redistribuidos_df = _redistribute(
                 unassigned_df, informantes_grupo_a_upper, informantes_grupo_b_upper, origens_especiais,
-                filtros_grupo_natureza, filtros_orgao_origem
+                filtros_grupo_natureza, filtros_orgao_origem,
+                only_locked_map=only_locked_map
             )
+            # Sanity check: remove qualquer atribuição feita a "somente exclusivos"
+            if not redistribuidos_df.empty:
+                mask_bad = redistribuidos_df["Informante"].map(lambda x: bool(only_locked_map.get(x, False)))
+                if mask_bad.any():
+                    # devolve ao pool (aqui descartamos; alternativa: re-rodar redistribuição)
+                    redistribuidos_df = redistribuidos_df[~mask_bad]
+
             redistribuidos_df = redistribuidos_df[redistribuidos_df["Informante"] != ""]
             res_final = pd.concat([aceitos_df, redistribuidos_df], ignore_index=True)
 
@@ -530,20 +559,20 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             res_geral_bytes = to_excel_bytes(res_final.drop(columns=["Descrição Informação", "Funcionário Informação"], errors="ignore"))
 
             # 10) Planilhas individuais — Pré
-            priority_map_local = priority_map  # para clausura
-            def build_pre_individuals():
+            def build_pre_individuals(priority_map_local):
                 pre_individual_files = {}
-                for inf in pre_df["Informante"].dropna().unique():
-                    df_inf = pre_df[pre_df["Informante"] == inf].copy()
-                    df_inf["Critério"] = df_inf.apply(calcula_criterio, axis=1)
-                    df_inf["CustomPriority"] = df_inf["Critério"].apply(lambda x: priority_map_local.get(x, 4))
+                pre_df_local = pre_df.copy()
+                pre_df_local["Critério"] = pre_df_local.apply(calcula_criterio, axis=1)
+                pre_df_local["CustomPriority"] = pre_df_local["Critério"].apply(lambda x: priority_map_local.get(x, 4))
+                for inf in pre_df_local["Informante"].dropna().unique():
+                    df_inf = pre_df_local[pre_df_local["Informante"] == inf].copy()
                     df_inf = df_inf.sort_values(by=["CustomPriority", "Dias no Orgão"], ascending=[True, False])
                     df_inf = df_inf.drop(columns=["CustomPriority"])
                     df_inf = df_inf.head(200)
                     pre_individual_files[inf] = to_excel_bytes(df_inf)
                 return pre_individual_files
 
-            pre_individual_files = build_pre_individuals()
+            pre_individual_files = build_pre_individuals(priority_map)
 
             # 11) Prevenção Top-200 para PRINCIPAL (opcional)
             df_prev_map = None
@@ -656,6 +685,4 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
 
 else:
     st.info("Faça o upload de: processos.xlsx, processosmanter.xlsx, observacoes.xlsx e disponibilidade_equipe.xlsx.")
-
-
-
+```
