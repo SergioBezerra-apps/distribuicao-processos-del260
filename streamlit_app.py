@@ -385,7 +385,7 @@ managers_emails = st.text_input(
 )
 
 # -----------------------------------------------------------------------------
-// Somente após carregar os 4 arquivos principais
+#// Somente após carregar os 4 arquivos principais
 # -----------------------------------------------------------------------------
 
 if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", "disponibilidade"]):
@@ -779,3 +779,4 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
         st.session_state.numero = numero
 else:
     st.info("Carregue os quatro arquivos exigidos para habilitar a execução.")
+
