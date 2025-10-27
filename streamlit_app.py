@@ -510,7 +510,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
         key="rules_editor_v2",
         column_config={
             "Informante": st.column_config.SelectboxColumn("Informante", options=inf_opts, required=True),
-            "Grupo Natureza": st.column_config.SelectboxColumn("Grupo Natureza", options=nature_opts, required=True),
+            "Grupo Natureza": st.column_config.SelectboxColumn("Grupo Natureza", options=natureza_opts, required=True),
             "Orgão Origem": st.column_config.SelectboxColumn("Orgão Origem", options=orgao_opts, required=True),
             "Exclusiva?": st.column_config.CheckboxColumn("Exclusiva?")
         }
@@ -839,3 +839,4 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
         st.session_state.numero = numero
 else:
     st.info("Carregue os quatro arquivos exigidos para habilitar a execução.")
+
