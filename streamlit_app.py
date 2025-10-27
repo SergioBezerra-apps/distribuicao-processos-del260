@@ -515,7 +515,6 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
         key="rules_editor_v2",
         column_config={
             "Informante": st.column_config.SelectboxColumn("Informante", options=inf_opts, required=True),
-            # <- corrigido para natureza_opts
             "Grupo Natureza": st.column_config.SelectboxColumn("Grupo Natureza", options=natureza_opts, required=True),
             "Orgão Origem": st.column_config.SelectboxColumn("Orgão Origem", options=orgao_opts, required=True),
             "Exclusiva?": st.column_config.CheckboxColumn("Exclusiva?")
@@ -614,9 +613,6 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             rules_list = []
             rules_df_in = rules_df
 
-            def _norm(x):
-                return (str(x).strip().str.upper() if pd.notna(x) else "")
-
             if rules_df_in is not None and not rules_df_in.empty:
                 tmp = rules_df_in.copy()
                 tmp["Informante"]     = tmp["Informante"].map(lambda v: str(v).strip().upper() if pd.notna(v) else "")
@@ -638,29 +634,40 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             if "Locked" not in res_assigned2.columns:
                 res_assigned2["Locked"] = False
 
-            # 7) FILTROS + only-locked
+            # 7) FILTROS + only-locked (com blindagem de exclusivos)
             only_locked_map_local = st.session_state.get("only_locked_map", {})
+
+            locked_mask_all = res_assigned2["Locked"].astype(bool) if "Locked" in res_assigned2.columns else False
+            locked_keep_df  = res_assigned2[locked_mask_all].copy()   # entra direto
+            nonlocked_df    = res_assigned2[~locked_mask_all].copy()  # apenas estes sofrem filtros/only-locked
+
             aceitos_parts, rejeitados_parts = [], []
-            for inf in res_assigned2["Informante"].dropna().unique():
-                df_inf = res_assigned2[res_assigned2["Informante"] == inf].copy()
-                if "Locked" not in df_inf.columns:
-                    df_inf["Locked"] = False
+
+            for inf in nonlocked_df["Informante"].dropna().unique():
+                df_inf = nonlocked_df[nonlocked_df["Informante"] == inf].copy()
+
                 only_locked = bool(only_locked_map_local.get(inf, False))
                 if only_locked:
-                    mask_keep = df_inf["Locked"]
-                else:
-                    mask_keep = df_inf.apply(
-                        lambda r: True if r["Locked"] else _accepts(
-                            inf, r["Orgão Origem"], r["Grupo Natureza"], filtros_grupo_natureza, filtros_orgao_origem
-                        ),
-                        axis=1
-                    )
+                    # nenhum não-locked fica com ele
+                    rej = df_inf.copy()
+                    rej["Informante"] = ""
+                    rejeitados_parts.append(rej)
+                    continue
+
+                # aplica whitelist em não-locked
+                mask_keep = df_inf.apply(
+                    lambda r: _accepts(
+                        inf, r["Orgão Origem"], r["Grupo Natureza"],
+                        filtros_grupo_natureza, filtros_orgao_origem
+                    ),
+                    axis=1
+                )
                 aceitos_parts.append(df_inf[mask_keep])
                 rej = df_inf[~mask_keep].copy()
                 rej["Informante"] = ""
                 rejeitados_parts.append(rej)
 
-            aceitos_df = pd.concat(aceitos_parts, ignore_index=True) if aceitos_parts else pd.DataFrame(columns=res_assigned2.columns)
+            aceitos_df = pd.concat([locked_keep_df] + aceitos_parts, ignore_index=True) if aceitos_parts else locked_keep_df.copy()
             unassigned_df = pd.concat(rejeitados_parts, ignore_index=True) if rejeitados_parts else pd.DataFrame(columns=res_assigned2.columns)
 
             # 8) Redistribuição do restante (não Locked)
