@@ -1,7 +1,3 @@
-# -*- coding: utf-8 -*-
-# App: Distribuição de Processos da Del. 260
-
-
 import os
 import io
 import zipfile
@@ -261,6 +257,82 @@ def _apply_prevention_top200(res_final: pd.DataFrame, df_prev_map: pd.DataFrame,
 
     return out
 
+# >>> MOD: helper para “grudar” o Top-200 no próprio res_final
+def _stick_previous_topN(res_df: pd.DataFrame, df_prev_map: pd.DataFrame,
+                         calcula_criterio, priority_map: dict,
+                         filtros_grupo_natureza, filtros_orgao_origem,
+                         only_locked_map: dict, top_n_per_inf: int = 200) -> pd.DataFrame:
+    """
+    Reatribui internamente no res_df para garantir que, para cada informante,
+    seus Top-N processos (priorizando os que eram dele na semana anterior) permaneçam com ele,
+    desde que NÃO infrinjam:
+      - trava exclusiva (Locked) de outro,
+      - preferência 'somente exclusivos' do destino,
+      - whitelist do destino (natureza/órgão).
+    """
+    if res_df.empty or df_prev_map is None or df_prev_map.empty:
+        return res_df
+
+    prev = df_prev_map.copy()
+    prev.columns = [c.strip() for c in prev.columns]
+    if not {"Processo", "Informante"}.issubset(set(prev.columns)):
+        return res_df
+
+    prev["Processo"]   = prev["Processo"].astype(str).str.strip()
+    prev["Informante"] = prev["Informante"].astype(str).str.strip().str.upper()
+    prev_map = dict(zip(prev["Processo"], prev["Informante"]))
+
+    df = res_df.copy()
+    df["Critério"] = df.apply(calcula_criterio, axis=1)
+    df["CustomPriority"] = df["Critério"].apply(lambda x: priority_map.get(x, 4))
+
+    # garantir coluna Locked
+    if "Locked" not in df.columns:
+        df["Locked"] = False
+
+    for inf in df["Informante"].astype(str).str.upper().dropna().unique():
+        bloco = df.copy()
+
+        # candidatos que 'inf' ACEITA pela whitelist:
+        mask_accept = bloco.apply(
+            lambda r: _accepts(inf, r["Orgão Origem"], r["Grupo Natureza"],
+                               filtros_grupo_natureza, filtros_orgao_origem),
+            axis=1
+        )
+        bloco = bloco[mask_accept].copy()
+        if bloco.empty:
+            continue
+
+        # preferir os que já eram de 'inf' na semana anterior:
+        bloco["preferido"] = bloco["Processo"].astype(str).map(
+            lambda p: 1 if prev_map.get(p) == inf else 0
+        )
+        bloco = bloco.sort_values(
+            by=["preferido", "CustomPriority", "Dias no Orgão"],
+            ascending=[False, True, False]
+        )
+
+        top_keep = bloco.head(top_n_per_inf)["Processo"].astype(str).tolist()
+        if not top_keep:
+            continue
+
+        sl_only = bool(only_locked_map.get(inf, False))
+
+        def can_move(row):
+            if str(row["Processo"]) not in top_keep:
+                return False
+            # não desloca item 'Locked' travado para OUTRO informante:
+            if row.get("Locked", False) and str(row.get("Informante", "")).upper() != inf:
+                return False
+            # se o destino exige 'somente exclusivos', só aceita se a linha é Locked:
+            if sl_only and not row.get("Locked", False):
+                return False
+            return True
+
+        df.loc[df.apply(can_move, axis=1), "Informante"] = inf
+
+    return df.drop(columns=["CustomPriority"], errors="ignore")
+
 # =============================================================================
 # UI
 # =============================================================================
@@ -313,7 +385,7 @@ managers_emails = st.text_input(
 )
 
 # -----------------------------------------------------------------------------
-# Somente após carregar os 4 arquivos principais
+// Somente após carregar os 4 arquivos principais
 # -----------------------------------------------------------------------------
 
 if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", "disponibilidade"]):
@@ -399,7 +471,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
                              filtros_grupo_natureza, filtros_orgao_origem,
                              rules_df=None, prev_file=None):
 
-            # 1) Leitura base (novamente, agora para o fluxo completo) e normalização
+            # 1) Leitura base e normalização
             df = pd.read_excel(processos_file); df.columns = df.columns.str.strip()
             for col in ["Grupo Natureza", "Orgão Origem"]:
                 if col in df.columns:
@@ -523,13 +595,13 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
                 res_assigned2["Locked"] = False
 
             # 7) FILTROS (whitelist) + "somente exclusivos"
-            only_locked_map = st.session_state.get("only_locked_map", {})
+            only_locked_map_local = st.session_state.get("only_locked_map", {})
             aceitos_parts, rejeitados_parts = [], []
             for inf in res_assigned2["Informante"].dropna().unique():
                 df_inf = res_assigned2[res_assigned2["Informante"] == inf].copy()
                 if "Locked" not in df_inf.columns:
                     df_inf["Locked"] = False
-                only_locked = bool(only_locked_map.get(inf, False))
+                only_locked = bool(only_locked_map_local.get(inf, False))
                 if only_locked:
                     mask_keep = df_inf["Locked"]  # aceita apenas Locked
                 else:
@@ -556,16 +628,37 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             redistribuidos_df = _redistribute(
                 unassigned_df, informantes_grupo_a_upper, informantes_grupo_b_upper, origens_especiais,
                 filtros_grupo_natureza, filtros_orgao_origem,
-                only_locked_map=only_locked_map
+                only_locked_map=only_locked_map_local
             )
             # Sanity check: remove qualquer atribuição feita a "somente exclusivos"
             if not redistribuidos_df.empty:
-                mask_bad = redistribuidos_df["Informante"].map(lambda x: bool(only_locked_map.get(x, False)))
+                mask_bad = redistribuidos_df["Informante"].map(lambda x: bool(only_locked_map_local.get(x, False)))
                 if mask_bad.any():
                     redistribuidos_df = redistribuidos_df[~mask_bad]
 
             redistribuidos_df = redistribuidos_df[redistribuidos_df["Informante"] != ""]
             res_final = pd.concat([aceitos_df, redistribuidos_df], ignore_index=True)
+
+            # >>> MOD (A): ler planilha anterior e aplicar reatribuição “stick” no res_final
+            df_prev_map = None
+            if prev_file is not None:
+                try:
+                    df_prev_raw = pd.read_excel(prev_file)
+                    df_prev_raw.columns = [c.strip() for c in df_prev_raw.columns]
+                    if {"Processo", "Informante"}.issubset(set(df_prev_raw.columns)):
+                        df_prev_map = df_prev_raw[["Processo", "Informante"]].copy()
+                    else:
+                        st.warning("Planilha anterior sem colunas 'Processo' e 'Informante'. Prevenção não aplicada.")
+                except Exception as e:
+                    st.warning(f"Falha ao ler planilha anterior: {e}")
+
+            if df_prev_map is not None:
+                res_final = _stick_previous_topN(
+                    res_final, df_prev_map, calcula_criterio, priority_map,
+                    filtros_grupo_natureza, filtros_orgao_origem,
+                    only_locked_map=only_locked_map_local, top_n_per_inf=200
+                )
+            # <<< MOD (A) fim
 
             # 9) Planilhas gerais
             pre_geral_filename = f"{numero}_planilha_geral_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx"
@@ -583,26 +676,13 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
                     df_inf = pre_df_local[pre_df_local["Informante"] == inf].copy()
                     df_inf = df_inf.sort_values(by=["CustomPriority", "Dias no Orgão"], ascending=[True, False])
                     df_inf = df_inf.drop(columns=["CustomPriority"])
-                    df_inf = df_inf.head(200)
+                    df_inf = df_inf.head(200)  # mantém 200 por informante
                     pre_individual_files[inf] = to_excel_bytes(df_inf)
                 return pre_individual_files
 
             pre_individual_files = build_pre_individuals(priority_map)
 
-            # 11) Prevenção Top-200 para PRINCIPAL (opcional)
-            df_prev_map = None
-            if prev_file is not None:
-                try:
-                    df_prev_raw = pd.read_excel(prev_file)
-                    cols = [c.strip() for c in df_prev_raw.columns]
-                    df_prev_raw.columns = cols
-                    if {"Processo", "Informante"}.issubset(set(cols)):
-                        df_prev_map = df_prev_raw[["Processo", "Informante"]].copy()
-                    else:
-                        st.warning("Planilha anterior sem colunas 'Processo' e 'Informante'. Prevenção não aplicada.")
-                except Exception as e:
-                    st.warning(f"Falha ao ler planilha anterior: {e}")
-
+            # 11) Prevenção Top-200 para PRINCIPAL (opcional) — arquivos individuais
             res_individual_files = {}
             top200_dict = _apply_prevention_top200(
                 res_final, df_prev_map, calcula_criterio, priority_map, filtros_grupo_natureza, filtros_orgao_origem
@@ -697,6 +777,5 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
                         send_email_with_two_attachments(email_destino, subject_inf, body_inf, attachment_pre, filename_pre, attachment_res, filename_res)
 
         st.session_state.numero = numero
-
 else:
-    st.info("Faça o upload de: processos.xlsx, processosmanter.xlsx, observacoes.xlsx e disponibilidade_equipe.xlsx.")
+    st.info("Carregue os quatro arquivos exigidos para habilitar a execução.")
