@@ -119,8 +119,7 @@ def _accepts(inf, orgao, natureza, filtros_grupo_natureza, filtros_orgao_origem)
 def _apply_routing_rules(df_pool: pd.DataFrame, rules: list, filtros_grupo_natureza, filtros_orgao_origem):
     """
     Regras (Natureza, Órgão) → Informante, com 'Exclusiva?' opcional.
-    Escolhe a mais específica; empate: a primeira.
-    Exclusiva? True => Locked=True.
+    Escolhe a mais específica; empate: a primeira. Exclusiva? => Locked=True.
     """
     if df_pool.empty:
         df_empty = df_pool.copy()
@@ -207,11 +206,52 @@ def _redistribute(df_unassigned: pd.DataFrame,
         out_rows.append(row)
     return pd.DataFrame(out_rows)
 
+# ======================
+# Critério / Prioridade
+# ======================
+
+DIAS_5_ANOS = 1825   # >= 5 anos
+DIAS_4_ANOS = 1460   # >= 4 anos
+
+def calcula_criterio(row):
+    """
+    Ordem:
+      01 >= 5 anos de autuado
+      02 Entre 4 e <5 anos de autuado
+      03 >= 150 dias no órgão
+      04 Demais (data da carga)
+    """
+    try:
+        tempo = float(row["Tempo TCERJ"])
+    except Exception:
+        tempo = -1
+
+    try:
+        dias_orgao = float(row["Dias no Orgão"])
+    except Exception:
+        dias_orgao = -1
+
+    if tempo >= DIAS_5_ANOS:
+        return "01 Mais de cinco anos de autuado"
+    elif DIAS_4_ANOS <= tempo < DIAS_5_ANOS:
+        return "02 A completar 5 anos de autuado"
+    elif dias_orgao >= 150:
+        return "03 Mais de 5 meses na 3CAP"
+    else:
+        return "04 Data da carga"
+
+priority_map = {
+    "01 Mais de cinco anos de autuado": 0,
+    "02 A completar 5 anos de autuado": 1,
+    "03 Mais de 5 meses na 3CAP": 2,
+    "04 Data da carga": 3
+}
+
 def _apply_prevention_top200(res_final: pd.DataFrame, df_prev_map: pd.DataFrame,
-                             calcula_criterio, priority_map: dict,
                              filtros_grupo_natureza, filtros_orgao_origem) -> dict:
     """
     Para cada informante, gera planilha individual (<=200) priorizando os que já eram dele.
+    Whitelist só filtra itens não-Locked; Locked entram sempre.
     """
     out = {}
     base = res_final.copy()
@@ -230,13 +270,19 @@ def _apply_prevention_top200(res_final: pd.DataFrame, df_prev_map: pd.DataFrame,
 
     for inf in base["Informante"].dropna().unique():
         df_inf = base[base["Informante"] == inf].copy()
-        # whitelist do inf
+
+        # Whitelist apenas nos não-Locked
+        locked_part = df_inf[df_inf.get("Locked", False) == True].copy()
+        nonlocked   = df_inf[df_inf.get("Locked", False) != True].copy()
+
         grupos_escolhidos = filtros_grupo_natureza.get(inf, [])
         orgaos_escolhidos = filtros_orgao_origem.get(inf, [])
         if grupos_escolhidos:
-            df_inf = df_inf[df_inf["Grupo Natureza"].isin(grupos_escolhidos)]
+            nonlocked = nonlocked[nonlocked["Grupo Natureza"].isin(grupos_escolhidos)]
         if orgaos_escolhidos:
-            df_inf = df_inf[df_inf["Orgão Origem"].isin(orgaos_escolhidos)]
+            nonlocked = nonlocked[nonlocked["Orgão Origem"].isin(orgaos_escolhidos)]
+
+        df_inf = pd.concat([locked_part, nonlocked], ignore_index=True)
 
         if prev_map:
             df_inf["preferido"] = df_inf["Processo"].astype(str).map(lambda p: 1 if prev_map.get(p) == inf else 0)
@@ -253,19 +299,14 @@ def _apply_prevention_top200(res_final: pd.DataFrame, df_prev_map: pd.DataFrame,
     return out
 
 # =============================================================================
-# NOVO: “stick” ESTRITO — só gruda processos que já eram do informante na planilha anterior
+# STICK ESTRITO — cola apenas o que já era do informante (Top-200),
+# whitelist NÃO barra itens Locked, e respeita travas/only-locked do destino.
 # =============================================================================
 
 def _stick_previous_topN_STRICT(res_df: pd.DataFrame, df_prev_map: pd.DataFrame,
-                                calcula_criterio, priority_map: dict,
                                 filtros_grupo_natureza, filtros_orgao_origem,
                                 only_locked_map: dict, top_n_per_inf: int = 200):
     """
-    Para cada informante, considera APENAS os processos que já eram dele na planilha anterior.
-    Entre esses, ordena pela prioridade atual e 'gruda' até top_n_per_inf, desde que:
-      - não estejam Locked para OUTRO informante,
-      - se o destino for 'somente exclusivos', o item seja Locked,
-      - passem na whitelist (natureza/órgão) do destino.
     Retorna: (res_df_atualizado, diagnostico_df)
     """
     if res_df.empty or df_prev_map is None or df_prev_map.empty:
@@ -287,56 +328,48 @@ def _stick_previous_topN_STRICT(res_df: pd.DataFrame, df_prev_map: pd.DataFrame,
     df["CustomPriority"] = df["Critério"].apply(lambda x: priority_map.get(x, 4))
 
     diag_rows = []
-
-    # mapa Processo -> informante anterior
     prev_map = dict(zip(prev["Processo"], prev["Informante"]))
 
-    # por informante atual (universo na distribuição)
     for inf in sorted(df["Informante"].astype(str).str.upper().dropna().unique()):
         prev_set = set(prev[prev["Informante"] == inf]["Processo"].astype(str))
 
-        # pegar no df atual apenas os processos que estão no prev_set
         bloco = df[df["Processo"].astype(str).isin(prev_set)].copy()
         if bloco.empty:
             diag_rows.append({"Informante": inf, "colados": 0, "bloq_locked_outro": 0, "bloq_only_locked": 0, "bloq_whitelist": 0})
             continue
 
-        # whitelist do destino
-        mask_accept = bloco.apply(
-            lambda r: _accepts(inf, r["Orgão Origem"], r["Grupo Natureza"],
-                               filtros_grupo_natureza, filtros_orgao_origem),
+        # Whitelist: itens Locked entram SEM checar whitelist; demais passam por _accepts
+        bloco["ok_whitelist"] = bloco.apply(
+            lambda r: True if bool(r.get("Locked", False)) else _accepts(
+                inf, r["Orgão Origem"], r["Grupo Natureza"],
+                filtros_grupo_natureza, filtros_orgao_origem
+            ),
             axis=1
         )
-        bloco["ok_whitelist"] = mask_accept
 
-        # ordenar por prioridade atual
-        bloco = bloco.sort_values(by=["CustomPriority", "Dias no Orgão"], ascending=[True, False])
-
-        # manter top_n_per_inf após whitelist
-        bloco = bloco[bloco["ok_whitelist"]].head(top_n_per_inf).copy()
+        # Ordenar por prioridade e limitar Top-N depois de whitelist
+        bloco = bloco[bloco["ok_whitelist"]].copy()
+        bloco = bloco.sort_values(by=["CustomPriority", "Dias no Orgão"], ascending=[True, False]).head(top_n_per_inf)
 
         if bloco.empty:
             diag_rows.append({"Informante": inf, "colados": 0, "bloq_locked_outro": 0, "bloq_only_locked": 0, "bloq_whitelist": int(len(prev_set))})
             continue
 
-        # bloqueios
         sl_only = bool(only_locked_map.get(inf, False))
 
         def blocked_locked_outro(row):
-            # se a linha é Locked, mas para OUTRO informante (já atribuída como Locked para outro)
+            # Item Locked mas travado para OUTRO informante
             return bool(row.get("Locked", False) and str(row.get("Informante","")).upper() != inf)
 
         def blocked_only_locked(row):
-            # destino exige only_locked e a linha não é Locked
+            # Destino exige only-locked e o item NÃO é Locked
             return bool(sl_only and not row.get("Locked", False))
 
         bloco["bloq_locked_outro"] = bloco.apply(blocked_locked_outro, axis=1)
         bloco["bloq_only_locked"]  = bloco.apply(blocked_only_locked, axis=1)
 
-        # candidatos coláveis
         colaveis = bloco[~(bloco["bloq_locked_outro"] | bloco["bloq_only_locked"])].copy()
 
-        # colar (reatribuir) no df principal
         if not colaveis.empty:
             df.loc[df["Processo"].astype(str).isin(colaveis["Processo"].astype(str)), "Informante"] = inf
 
@@ -345,7 +378,9 @@ def _stick_previous_topN_STRICT(res_df: pd.DataFrame, df_prev_map: pd.DataFrame,
             "colados": int(len(colaveis)),
             "bloq_locked_outro": int(bloco["bloq_locked_outro"].sum()),
             "bloq_only_locked": int(bloco["bloq_only_locked"].sum()),
-            "bloq_whitelist": int((~bloco["ok_whitelist"]).sum())  # (aqui já filtramos ok_whitelist antes do head)
+            # (como filtramos ok_whitelist antes do head, bloq_whitelist aqui aparece zero;
+            #  deixamos a coluna por simetria/diagnóstico)
+            "bloq_whitelist": 0
         })
 
     df = df.drop(columns=["CustomPriority"], errors="ignore")
@@ -403,12 +438,12 @@ managers_emails = st.text_input(
     value="annapc@tcerj.tc.br, fabiovf@tcerj.tc.br, sergiolblj@tcerj.tc.br, sergiollima2@hotmail.com"
 )
 
-# ----------------------------------------------------------------------------- 
+# -----------------------------------------------------------------------------
 # Somente após carregar os 4 arquivos principais
 # -----------------------------------------------------------------------------
 
 if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", "disponibilidade"]):
-    # ====== Leitura e normalização ======
+    # ====== Leitura e normalização UPPER ======
     df_proc = pd.read_excel(files_dict["processos"])
     df_proc.columns = df_proc.columns.str.strip()
     if "Grupo Natureza" in df_proc.columns:
@@ -434,7 +469,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
     grupo_natureza_options = sorted(df_proc["Grupo Natureza"].dropna().unique())
     orgaos_origem_options  = sorted(df_proc["Orgão Origem"].dropna().unique())
 
-    # ========== Filtros (whitelist) ==========
+    # ========== Filtros (whitelist) por informante ==========
     st.markdown("### Filtros (whitelist) por informante")
     st.caption("Vazio = aceita tudo. Se marcar Natureza e Órgão, exige interseção (E).")
     filtros_grupo_natureza, filtros_orgao_origem = {}, {}
@@ -448,7 +483,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             options=orgaos_origem_options, key=f"org_{inf.replace(' ','_')}"
         )
 
-    # ========== Preferências ==========
+    # ========== Preferências: somente exclusivos (Locked) ==========
     st.markdown("### Preferências por informante")
     st.caption("Marque para que o informante receba apenas itens de regras exclusivas (Locked).")
     only_locked_map = st.session_state.get("only_locked_map", {})
@@ -475,7 +510,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
         key="rules_editor_v2",
         column_config={
             "Informante": st.column_config.SelectboxColumn("Informante", options=inf_opts, required=True),
-            "Grupo Natureza": st.column_config.SelectboxColumn("Grupo Natureza", options=natureza_opts, required=True),
+            "Grupo Natureza": st.column_config.SelectboxColumn("Grupo Natureza", options=nature_opts, required=True),
             "Orgão Origem": st.column_config.SelectboxColumn("Orgão Origem", options=orgao_opts, required=True),
             "Exclusiva?": st.column_config.CheckboxColumn("Exclusiva?")
         }
@@ -560,24 +595,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             res_assigned = pd.concat([df_grupo_a, df_grupo_b], ignore_index=True)
 
             # 5) Critério/Prioridade
-            def calcula_criterio(row):
-                if pd.isna(row["Processo"]) or row["Processo"] == "":
-                    return ""
-                elif row["Tempo TCERJ"] > 1765:
-                    return "01 Mais de cinco anos de autuado"
-                elif 1220 < row["Tempo TCERJ"] < 1765:
-                    return "02 A completar 5 anos de autuado"
-                elif row["Dias no Orgão"] >= 150:
-                    return "03 Mais de 5 meses na 3CAP"
-                else:
-                    return "04 Data da carga"
             res_assigned["Critério"] = res_assigned.apply(calcula_criterio, axis=1)
-            priority_map = {
-                "01 Mais de cinco anos de autuado": 0,
-                "02 A completar 5 anos de autuado": 1,
-                "03 Mais de 5 meses na 3CAP": 2,
-                "04 Data da carga": 3
-            }
             res_assigned["CustomPriority"] = res_assigned["Critério"].apply(lambda x: priority_map.get(x, 4))
             res_assigned = res_assigned.sort_values(by=["Informante", "CustomPriority", "Dias no Orgão"],
                                                     ascending=[True, True, False]).reset_index(drop=True)
@@ -654,7 +672,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             redistribuidos_df = redistribuidos_df[redistribuidos_df["Informante"] != ""]
             res_final = pd.concat([aceitos_df, redistribuidos_df], ignore_index=True)
 
-            # 8.1) LE PLANI ANTERIOR + STICK ESTRITO (só os que já eram dele)
+            # 8.1) PREVENÇÃO (STICK ESTRITO) — cola até 200 do que já era de cada informante
             df_prev_map = None
             if prev_file is not None:
                 try:
@@ -670,10 +688,20 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             diag_df = None
             if df_prev_map is not None:
                 res_final, diag_df = _stick_previous_topN_STRICT(
-                    res_final, df_prev_map, calcula_criterio, priority_map,
+                    res_final, df_prev_map,
                     filtros_grupo_natureza, filtros_orgao_origem,
                     only_locked_map=only_locked_map_local, top_n_per_inf=200
                 )
+
+                # 8.2) REORDENA após o stick para respeitar o Critério (e dias)
+                res_final = res_final.copy()
+                res_final["Critério"] = res_final.apply(calcula_criterio, axis=1)
+                res_final["CustomPriority"] = res_final["Critério"].apply(lambda x: priority_map.get(x, 4))
+                res_final = res_final.sort_values(
+                    by=["Informante", "CustomPriority", "Dias no Orgão"],
+                    ascending=[True, True, False]
+                ).reset_index(drop=True)
+                res_final = res_final.drop(columns=["CustomPriority"], errors="ignore")
 
             # 9) Planilhas gerais
             pre_geral_filename = f"{numero}_planilha_geral_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx"
@@ -681,26 +709,38 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             res_geral_filename = f"{numero}_planilha_geral_principal_{datetime.now().strftime('%Y%m%d')}.xlsx"
             res_geral_bytes = to_excel_bytes(res_final.drop(columns=["Descrição Informação", "Funcionário Informação"], errors="ignore"))
 
-            # 10) Planilhas individuais — Pré
-            def build_pre_individuals(priority_map_local):
+            # 10) Planilhas individuais — Pré (whitelist só para não-Locked)
+            def build_pre_individuals():
                 pre_individual_files = {}
                 pre_df_local = pre_df.copy()
                 pre_df_local["Critério"] = pre_df_local.apply(calcula_criterio, axis=1)
-                pre_df_local["CustomPriority"] = pre_df_local["Critério"].apply(lambda x: priority_map_local.get(x, 4))
+                pre_df_local["CustomPriority"] = pre_df_local["Critério"].apply(lambda x: priority_map.get(x, 4))
                 for inf in pre_df_local["Informante"].dropna().unique():
                     df_inf = pre_df_local[pre_df_local["Informante"] == inf].copy()
+
+                    locked_part = df_inf[df_inf.get("Locked", False) == True].copy()
+                    nonlocked   = df_inf[df_inf.get("Locked", False) != True].copy()
+
+                    grupos_escolhidos = filtros_grupo_natureza.get(inf, [])
+                    orgaos_escolhidos = filtros_orgao_origem.get(inf, [])
+                    if grupos_escolhidos:
+                        nonlocked = nonlocked[nonlocked["Grupo Natureza"].isin(grupos_escolhidos)]
+                    if orgaos_escolhidos:
+                        nonlocked = nonlocked[nonlocked["Orgão Origem"].isin(orgaos_escolhidos)]
+
+                    df_inf = pd.concat([locked_part, nonlocked], ignore_index=True)
                     df_inf = df_inf.sort_values(by=["CustomPriority", "Dias no Orgão"], ascending=[True, False])
                     df_inf = df_inf.drop(columns=["CustomPriority"])
                     df_inf = df_inf.head(200)
                     pre_individual_files[inf] = to_excel_bytes(df_inf)
                 return pre_individual_files
 
-            pre_individual_files = build_pre_individuals(priority_map)
+            pre_individual_files = build_pre_individuals()
 
-            # 11) Planilhas individuais — Principal (com prevenção Top-200)
+            # 11) Planilhas individuais — Principal (prevenção Top-200, whitelist só p/ não-Locked)
             res_individual_files = {}
             top200_dict = _apply_prevention_top200(
-                res_final, df_prev_map, calcula_criterio, priority_map, filtros_grupo_natureza, filtros_orgao_origem
+                res_final, df_prev_map, filtros_grupo_natureza, filtros_orgao_origem
             )
             for inf, df_inf in top200_dict.items():
                 filename_inf = f"{inf.replace(' ', '_')}_{numero}_principal_{datetime.now().strftime('%Y%m%d')}.xlsx"
@@ -724,7 +764,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
 
         st.success("Distribuição executada com sucesso!")
 
-        # Relatório de diagnóstico do STICK
+        # Diagnóstico do STICK
         if isinstance(diag_df, pd.DataFrame) and not diag_df.empty:
             st.markdown("#### Diagnóstico da Prevenção (Stick Estrito Top-200)")
             st.dataframe(diag_df.sort_values(by=["Informante"]).reset_index(drop=True), use_container_width=True)
