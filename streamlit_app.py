@@ -247,12 +247,22 @@ priority_map = {
     "04 Data da carga": 3
 }
 
+# ============
+# Locked util
+# ============
+
+def _locked_mask(df: pd.DataFrame) -> pd.Series:
+    """Series booleana alinhada indicando Locked."""
+    if "Locked" in df.columns:
+        return df["Locked"].astype(bool).reindex(df.index).fillna(False)
+    return pd.Series(False, index=df.index)
+
+# =============================================================================
+# PREVENÇÃO — listas individuais (<=200) com whitelist só p/ não-Locked
+# =============================================================================
+
 def _apply_prevention_top200(res_final: pd.DataFrame, df_prev_map: pd.DataFrame,
                              filtros_grupo_natureza, filtros_orgao_origem) -> dict:
-    """
-    Para cada informante, gera planilha individual (<=200) priorizando os que já eram dele.
-    Whitelist só filtra itens não-Locked; Locked entram sempre.
-    """
     out = {}
     base = res_final.copy()
     base["Critério"] = base.apply(calcula_criterio, axis=1)
@@ -272,8 +282,8 @@ def _apply_prevention_top200(res_final: pd.DataFrame, df_prev_map: pd.DataFrame,
         df_inf = base[base["Informante"] == inf].copy()
 
         # Whitelist apenas nos não-Locked
-        locked_part = df_inf[df_inf.get("Locked", False) == True].copy()
-        nonlocked   = df_inf[df_inf.get("Locked", False) != True].copy()
+        locked_part = df_inf[_locked_mask(df_inf)].copy()
+        nonlocked   = df_inf[~_locked_mask(df_inf)].copy()
 
         grupos_escolhidos = filtros_grupo_natureza.get(inf, [])
         orgaos_escolhidos = filtros_orgao_origem.get(inf, [])
@@ -306,9 +316,6 @@ def _apply_prevention_top200(res_final: pd.DataFrame, df_prev_map: pd.DataFrame,
 def _stick_previous_topN_STRICT(res_df: pd.DataFrame, df_prev_map: pd.DataFrame,
                                 filtros_grupo_natureza, filtros_orgao_origem,
                                 only_locked_map: dict, top_n_per_inf: int = 200):
-    """
-    Retorna: (res_df_atualizado, diagnostico_df)
-    """
     if res_df.empty or df_prev_map is None or df_prev_map.empty:
         return res_df, pd.DataFrame(columns=["Informante","colados","bloq_locked_outro","bloq_only_locked","bloq_whitelist"])
 
@@ -378,9 +385,7 @@ def _stick_previous_topN_STRICT(res_df: pd.DataFrame, df_prev_map: pd.DataFrame,
             "colados": int(len(colaveis)),
             "bloq_locked_outro": int(bloco["bloq_locked_outro"].sum()),
             "bloq_only_locked": int(bloco["bloq_only_locked"].sum()),
-            # (como filtramos ok_whitelist antes do head, bloq_whitelist aqui aparece zero;
-            #  deixamos a coluna por simetria/diagnóstico)
-            "bloq_whitelist": 0
+            "bloq_whitelist": 0  # whitelist já aplicada antes do head
         })
 
     df = df.drop(columns=["CustomPriority"], errors="ignore")
@@ -510,6 +515,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
         key="rules_editor_v2",
         column_config={
             "Informante": st.column_config.SelectboxColumn("Informante", options=inf_opts, required=True),
+            # <- corrigido para natureza_opts
             "Grupo Natureza": st.column_config.SelectboxColumn("Grupo Natureza", options=natureza_opts, required=True),
             "Orgão Origem": st.column_config.SelectboxColumn("Orgão Origem", options=orgao_opts, required=True),
             "Exclusiva?": st.column_config.CheckboxColumn("Exclusiva?")
@@ -565,6 +571,10 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             pre_df = df[mask_pre].copy(); pre_df["Informante"] = pre_df["Funcionário Informação"]
             res_df = df[~mask_pre].copy()
 
+            # garante Locked em pre_df
+            if "Locked" not in pre_df.columns:
+                pre_df["Locked"] = False
+
             # 3) Disponibilidade / e-mails / A-B
             df_disp_local = pd.read_excel(disp_file); df_disp_local.columns = df_disp_local.columns.str.strip()
             if "disponibilidade" in df_disp_local.columns:
@@ -605,13 +615,13 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             rules_df_in = rules_df
 
             def _norm(x):
-                return (str(x).strip().upper() if pd.notna(x) else "")
+                return (str(x).strip().str.upper() if pd.notna(x) else "")
 
             if rules_df_in is not None and not rules_df_in.empty:
                 tmp = rules_df_in.copy()
-                tmp["Informante"]     = tmp["Informante"].map(_norm)
-                tmp["Grupo Natureza"] = tmp["Grupo Natureza"].map(lambda v: "(QUALQUER)" if str(v).strip()=="" else _norm(v))
-                tmp["Orgão Origem"]   = tmp["Orgão Origem"].map(lambda v: "(QUALQUER)" if str(v).strip()=="" else _norm(v))
+                tmp["Informante"]     = tmp["Informante"].map(lambda v: str(v).strip().upper() if pd.notna(v) else "")
+                tmp["Grupo Natureza"] = tmp["Grupo Natureza"].map(lambda v: "(QUALQUER)" if str(v).strip()=="" else str(v).strip().upper())
+                tmp["Orgão Origem"]   = tmp["Orgão Origem"].map(lambda v: "(QUALQUER)" if str(v).strip()=="" else str(v).strip().upper())
                 tmp = tmp[tmp["Informante"] != ""]
                 for _, r in tmp.iterrows():
                     rules_list.append({
@@ -685,6 +695,10 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
                 except Exception as e:
                     st.warning(f"Falha ao ler planilha anterior: {e}")
 
+            # garantir Locked em res_final
+            if "Locked" not in res_final.columns:
+                res_final["Locked"] = False
+
             diag_df = None
             if df_prev_map is not None:
                 res_final, diag_df = _stick_previous_topN_STRICT(
@@ -692,7 +706,6 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
                     filtros_grupo_natureza, filtros_orgao_origem,
                     only_locked_map=only_locked_map_local, top_n_per_inf=200
                 )
-
                 # 8.2) REORDENA após o stick para respeitar o Critério (e dias)
                 res_final = res_final.copy()
                 res_final["Critério"] = res_final.apply(calcula_criterio, axis=1)
@@ -718,8 +731,8 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
                 for inf in pre_df_local["Informante"].dropna().unique():
                     df_inf = pre_df_local[pre_df_local["Informante"] == inf].copy()
 
-                    locked_part = df_inf[df_inf.get("Locked", False) == True].copy()
-                    nonlocked   = df_inf[df_inf.get("Locked", False) != True].copy()
+                    locked_part = df_inf[_locked_mask(df_inf)].copy()
+                    nonlocked   = df_inf[~_locked_mask(df_inf)].copy()
 
                     grupos_escolhidos = filtros_grupo_natureza.get(inf, [])
                     orgaos_escolhidos = filtros_orgao_origem.get(inf, [])
@@ -839,4 +852,3 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
         st.session_state.numero = numero
 else:
     st.info("Carregue os quatro arquivos exigidos para habilitar a execução.")
-
