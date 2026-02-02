@@ -1,4 +1,3 @@
-```python
 import os
 import io
 import zipfile
@@ -949,3 +948,4 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
 else:
     st.info("Carregue os quatro arquivos exigidos para habilitar a execução.")
 ```
+
