@@ -232,7 +232,7 @@ def _apply_routing_rules(df_pool: pd.DataFrame,
             inf_best    = rbest["Informante"]
             exclusiva   = bool(rbest.get("Exclusiva?", False))
 
-            # Se o destino quer "somente Locked", uma regra NÃO-exclusiva não deve jogar coisa lá
+            # destino quer "somente Locked": regra NÃO-exclusiva não atribui
             if (not exclusiva) and bool(only_locked_map.get(inf_best, False)):
                 remaining_rows.append(row)
                 continue
@@ -338,8 +338,7 @@ def _redistribute(df_unassigned: pd.DataFrame,
     return pd.DataFrame(out_rows)
 
 # =============================================================================
-# PREVENÇÃO — listas individuais (<=200) sem "sumir" processos
-# (não filtra whitelist; apenas marca ForaWhitelist em não-Locked)
+# PREVENÇÃO — Top-200 (não "some" processos: marca ForaWhitelist)
 # =============================================================================
 
 def _apply_prevention_top200(res_final: pd.DataFrame, df_prev_map: Optional[pd.DataFrame],
@@ -396,8 +395,7 @@ def _apply_prevention_top200(res_final: pd.DataFrame, df_prev_map: Optional[pd.D
     return out
 
 # =============================================================================
-# STICK ESTRITO — cola apenas o que já era do informante (Top-200),
-# whitelist NÃO barra itens Locked; respeita only-locked do destino.
+# STICK ESTRITO — Top-200 (respeita only-locked)
 # =============================================================================
 
 def _stick_previous_topN_STRICT(res_df: pd.DataFrame, df_prev_map: pd.DataFrame,
@@ -467,37 +465,40 @@ def _stick_previous_topN_STRICT(res_df: pd.DataFrame, df_prev_map: pd.DataFrame,
     return df, diag_df
 
 # =============================================================================
-# Auto-sync pools (inclui automaticamente novos informantes disponíveis no pool único)
+# Auto-sync pools
+#   - Pool Único: auto-inclui novos disponíveis
+#   - Pool Geral (B): auto-inclui novos disponíveis (recomendado no modelo A/B)
+#   - Pool Especial (A adicional): NÃO auto-inclui
 # =============================================================================
 
 def _sync_pool_selections(informantes_disponiveis: List[str]) -> None:
     """
-    Mantém seleções consistentes quando o cadastro muda.
+    Modelo A/B (Opção 1):
+      - B é o pool geral (base).
+      - A é um pool adicional para órgãos especiais (pode sobrepor B).
+      - Alguns podem estar só em B; alguns em A e B.
 
-    Regras de sincronização:
-      - Pool único: sempre inclui automaticamente novos informantes com disponibilidade=sim.
-      - Grupo B: NÃO auto-inclui por padrão (para não alterar sua escala A/B sem você perceber).
-               (Você pode ligar depois, se quiser.)
-      - Grupo A: nunca auto-inclui.
-
-    Também remove das seleções quem deixou de estar disponível.
+    Sincronização:
+      - novos informantes "sim" entram automaticamente em B e no Pool Único.
+      - A não é preenchido automaticamente.
+      - remove das seleções quem deixou de estar disponível.
     """
     avail_set = set(informantes_disponiveis)
 
-    if "grupo_a_sel" not in st.session_state:
-        st.session_state["grupo_a_sel"] = []
-    if "grupo_b_sel" not in st.session_state:
-        st.session_state["grupo_b_sel"] = informantes_disponiveis[:]  # default inicial
+    if "pool_b_sel" not in st.session_state:
+        st.session_state["pool_b_sel"] = informantes_disponiveis[:]
+    if "pool_a_sel" not in st.session_state:
+        st.session_state["pool_a_sel"] = []
     if "pool_unico_sel" not in st.session_state:
-        st.session_state["pool_unico_sel"] = informantes_disponiveis[:]  # default inicial
+        st.session_state["pool_unico_sel"] = informantes_disponiveis[:]
 
-    roster_key = "roster_sig_v1"
+    roster_key = "roster_sig_v2"
     roster_sig = "|".join(sorted(informantes_disponiveis))
     prev_sig = st.session_state.get(roster_key)
 
     if prev_sig != roster_sig:
-        a_set = set(st.session_state.get("grupo_a_sel", []))
-        b_set = set(st.session_state.get("grupo_b_sel", []))
+        a_set = set(st.session_state.get("pool_a_sel", []))
+        b_set = set(st.session_state.get("pool_b_sel", []))
         p_set = set(st.session_state.get("pool_unico_sel", []))
 
         # remove indisponíveis
@@ -505,14 +506,15 @@ def _sync_pool_selections(informantes_disponiveis: List[str]) -> None:
         b_set &= avail_set
         p_set &= avail_set
 
-        # novos informantes disponíveis
-        novos = avail_set.difference(p_set.union(a_set).union(b_set))
+        # novos disponíveis
+        novos = avail_set.difference(a_set.union(b_set).union(p_set))
 
-        # auto-inclusão somente no pool único
+        # auto em B e no pool único
+        b_set |= novos
         p_set |= novos
 
-        st.session_state["grupo_a_sel"] = sorted(a_set)
-        st.session_state["grupo_b_sel"] = sorted(b_set - a_set)   # sem sobreposição
+        st.session_state["pool_a_sel"] = sorted(a_set)  # A NÃO recebe novos automaticamente
+        st.session_state["pool_b_sel"] = sorted(b_set)
         st.session_state["pool_unico_sel"] = sorted(p_set)
 
         st.session_state[roster_key] = roster_sig
@@ -561,7 +563,11 @@ st.markdown(f"**Modo selecionado:** {modo}")
 
 modo_envio = None
 if not test_mode:
-    modo_envio = st.radio("Modo de envio:", options=["Produção - Gestores e Informantes", "Produção - Apenas Gestores"], horizontal=False)
+    modo_envio = st.radio(
+        "Modo de envio:",
+        options=["Produção - Gestores e Informantes", "Produção - Apenas Gestores"],
+        horizontal=False
+    )
 
 managers_emails = st.text_input(
     "E-mails dos gestores/revisores (separados por vírgula):",
@@ -667,7 +673,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
     )
 
     # =========================
-    # Disponíveis + auto-sync pool único
+    # Disponíveis + auto-sync pools
     # =========================
     df_disp_disponiveis = df_disp_editor[df_disp_editor["disponibilidade"] == "sim"].copy()
     informantes_disponiveis = sorted(df_disp_disponiveis["informantes"].dropna().unique().tolist())
@@ -677,7 +683,8 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
         st.error("Não há informantes com disponibilidade = 'sim'. Ajuste o cadastro acima para prosseguir.")
         st.stop()
 
-    # >>> auto-inclusão no pool único quando surge informante novo com sim
+    # >>> auto-inclusão:
+    #     - novos "sim" entram automaticamente em B e no Pool Único
     _sync_pool_selections(informantes_disponiveis)
 
     # =========================
@@ -686,44 +693,57 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
     st.markdown("## Modelo de Distribuição (PRINCIPAIS)")
     modelo_dist = st.radio(
         "Selecione o modelo:",
-        options=["A/B por órgão", "Pool único (todos para todos)"],
+        options=["A/B por órgão (Opção 1: A adicional + B base)", "Pool único (todos para todos)"],
         horizontal=True
     )
     st.session_state["modelo_dist"] = modelo_dist
 
     # =========================
-    # Seletores A/B ou Pool Único
+    # Seletores: Opção 1 (A adicional + B base) OU Pool Único
     # =========================
     st.markdown("## Seleção do Pool de Informantes (PRINCIPAIS)")
-    st.caption("No Pool Único, novos informantes disponíveis são auto-incluídos. No modo A/B, você controla manualmente os grupos.")
+    st.caption("Opção 1: B é o pool geral (base). A é um pool adicional usado apenas para órgãos especiais — e pode sobrepor B.")
 
-    if modelo_dist == "A/B por órgão":
-        grupo_a_sel = st.multiselect(
-            "Grupo A (origens especiais)",
+    if modelo_dist.startswith("A/B"):
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button("Selecionar TODOS no pool B (geral)"):
+                st.session_state["pool_b_sel"] = informantes_disponiveis[:]
+
+        with col2:
+            if st.button("Limpar pool A (órgãos especiais)"):
+                st.session_state["pool_a_sel"] = []
+
+        pool_b_sel = st.multiselect(
+            "Pool B (geral/base) — recebe processos de órgãos NÃO especiais",
             options=informantes_disponiveis,
-            default=[x for x in st.session_state.get("grupo_a_sel", []) if x in informantes_disponiveis],
-            key="grupo_a_multiselect"
+            default=[x for x in st.session_state.get("pool_b_sel", []) if x in informantes_disponiveis] or informantes_disponiveis[:],
+            key="pool_b_multiselect"
         )
 
-        opts_b = [x for x in informantes_disponiveis if x not in grupo_a_sel]
-        default_b = [x for x in st.session_state.get("grupo_b_sel", []) if x in opts_b]
-        if not default_b:
-            default_b = opts_b[:]  # inicial: todos (menos A)
-
-        grupo_b_sel = st.multiselect(
-            "Grupo B (demais origens)",
-            options=opts_b,
-            default=default_b,
-            key="grupo_b_multiselect"
+        pool_a_sel = st.multiselect(
+            "Pool A (adicional) — usado APENAS para órgãos especiais (pode sobrepor B)",
+            options=informantes_disponiveis,
+            default=[x for x in st.session_state.get("pool_a_sel", []) if x in informantes_disponiveis],
+            key="pool_a_multiselect"
         )
 
-        st.session_state["grupo_a_sel"] = grupo_a_sel
-        st.session_state["grupo_b_sel"] = grupo_b_sel
+        st.session_state["pool_b_sel"] = pool_b_sel
+        st.session_state["pool_a_sel"] = pool_a_sel
 
-        if not grupo_b_sel:
-            st.warning("Grupo B está vazio. Para 'demais origens', não haverá candidatos (pode gerar SEM_CANDIDATO).")
+        if not pool_b_sel:
+            st.warning("Pool B (geral) está vazio. A distribuição poderá ficar sem candidatos para órgãos não especiais.")
+
+        st.markdown("### Órgãos especiais (disparam uso do pool A)")
+        st.caption("Por enquanto, a lista é fixa. Se quiser, eu transformo em multiselect alimentado pelo 'Orgão Origem' real do dia.")
+        origens_especiais = ["SEC EST POLICIA MILITAR", "SEC EST DEFESA CIVIL"]
+        st.write(origens_especiais)
 
     else:
+        if st.button("Selecionar TODOS no Pool Único"):
+            st.session_state["pool_unico_sel"] = informantes_disponiveis[:]
+
         pool_unico_sel = st.multiselect(
             "Pool Único (todos para todos) — selecione quem participa",
             options=informantes_disponiveis,
@@ -733,7 +753,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
         st.session_state["pool_unico_sel"] = pool_unico_sel
 
         if not pool_unico_sel:
-            st.warning("Pool único vazio. A distribuição não terá candidatos (pode gerar SEM_CANDIDATO).")
+            st.warning("Pool único vazio. A distribuição não terá candidatos.")
 
     # =========================
     # Filtros (whitelist) por informante
@@ -864,32 +884,36 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             if not available:
                 raise ValueError("Nenhum informante disponível (cadastro/planilha).")
 
-            modelo = st.session_state.get("modelo_dist", "A/B por órgão")
+            modelo = st.session_state.get("modelo_dist", "A/B por órgão (Opção 1: A adicional + B base)")
             only_locked_map_local: Dict[str, bool] = st.session_state.get("only_locked_map", {})
 
-            # origens especiais: mantém padrão (pode virar seletor se você quiser depois)
-            origens_especiais = ["SEC EST POLICIA MILITAR", "SEC EST DEFESA CIVIL"]
+            # 4) Monta pools conforme modelo
+            if modelo.startswith("A/B"):
+                pool_b = [x for x in st.session_state.get("pool_b_sel", []) if x in available]
+                pool_a = [x for x in st.session_state.get("pool_a_sel", []) if x in available]
 
-            if modelo == "A/B por órgão":
-                grupo_a = [x for x in st.session_state.get("grupo_a_sel", []) if x in available]
-                grupo_b = [x for x in st.session_state.get("grupo_b_sel", []) if x in available]
+                # fallback defensivo: se B vazio, usa todos disponíveis
+                if not pool_b:
+                    pool_b = available[:]
 
-                if not grupo_b:
-                    # fallback defensivo: se B vazio, usa available exceto A
-                    grupo_b = [x for x in available if x not in grupo_a]
+                informantes_grupo_b = [s.upper() for s in pool_b]  # BASE
+                informantes_grupo_a = [s.upper() for s in pool_a]  # ADICIONAL (pode sobrepor B)
 
-                informantes_grupo_a = [s.upper() for s in grupo_a]
-                informantes_grupo_b = [s.upper() for s in grupo_b]
+                origens_especiais = ["SEC EST POLICIA MILITAR", "SEC EST DEFESA CIVIL"]
+
+                # Se A estiver vazio, órgãos especiais caem no B (por desenho)
+                if not informantes_grupo_a:
+                    informantes_grupo_a = informantes_grupo_b[:]
 
             else:
                 pool = [x for x in st.session_state.get("pool_unico_sel", []) if x in available]
                 if not pool:
                     pool = available[:]
-                informantes_grupo_a = []
+                informantes_grupo_a = []                  # não usado
                 informantes_grupo_b = [s.upper() for s in pool]
-                origens_especiais = []
+                origens_especiais = []                    # tudo cai no B
 
-            # 4) Regras
+            # 5) Regras
             rules_list = []
             if rules_df is not None and not rules_df.empty:
                 tmp = rules_df.copy()
@@ -905,7 +929,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
                         "Exclusiva?": bool(r.get("Exclusiva?", False))
                     })
 
-            # 5) PRINCIPAIS: pool -> regras -> redistribuição com fallback (100% destino)
+            # 6) PRINCIPAIS: pool -> regras -> redistribuição (100% destino)
             df_pool = res_df.copy().sort_values(by="Dias no Orgão", ascending=False).reset_index(drop=True)
             df_pool["Informante"] = ""
             if "Locked" not in df_pool.columns:
@@ -927,8 +951,9 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             res_final = pd.concat([assigned_by_rules, distributed_df], ignore_index=True)
             res_final["Informante"] = res_final["Informante"].astype(str).str.strip().str.upper()
 
+            # sanity: não deveria ocorrer se houver pool válido
             if (res_final["Informante"].astype(str).str.strip() == "").any():
-                st.error("Há processos sem informante. Verifique se existe ao menos 1 informante no pool selecionado.")
+                st.warning("Há processos sem informante (SEM_CANDIDATO). Verifique pools e disponibilidade.")
 
             # Ordenação final por critério
             res_final["Critério"] = res_final.apply(calcula_criterio, axis=1)
@@ -939,7 +964,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             ).reset_index(drop=True)
             res_final = res_final.drop(columns=["CustomPriority"], errors="ignore")
 
-            # 6) Prevenção (Stick estrito)
+            # 7) Prevenção (Stick estrito)
             df_prev_map = None
             if prev_file is not None:
                 try:
@@ -971,7 +996,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
                 ).reset_index(drop=True)
                 res_final = res_final.drop(columns=["CustomPriority"], errors="ignore")
 
-            # 7) Planilhas gerais
+            # 8) Planilhas gerais
             pre_geral_filename = f"{numero}_planilha_geral_pre_atribuida_{datetime.now().strftime('%Y%m%d')}.xlsx"
             pre_geral_bytes = to_excel_bytes(pre_df)
 
@@ -980,7 +1005,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
                 res_final.drop(columns=["Descrição Informação", "Funcionário Informação"], errors="ignore")
             )
 
-            # 8) Planilhas individuais — Pré
+            # 9) Planilhas individuais — Pré
             def build_pre_individuals():
                 pre_individual_files = {}
                 pre_df_local = pre_df.copy()
@@ -1015,7 +1040,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
 
             pre_individual_files = build_pre_individuals()
 
-            # 9) Planilhas individuais — Principal (Top-200)
+            # 10) Planilhas individuais — Principal (Top-200)
             res_individual_files = {}
             top200_dict = _apply_prevention_top200(
                 res_final, df_prev_map, filtros_grupo_natureza, filtros_orgao_origem
