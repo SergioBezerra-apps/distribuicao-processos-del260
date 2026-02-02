@@ -1,8 +1,9 @@
 import os
 import io
+import re
 import zipfile
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import streamlit as st
 import pandas as pd
@@ -105,6 +106,16 @@ def create_zip_from_dict(file_dict: dict) -> bytes:
     return zip_buffer.getvalue()
 
 # =============================================================================
+# Validações de cadastro
+# =============================================================================
+
+def _is_valid_email(x: str) -> bool:
+    if not isinstance(x, str):
+        return False
+    x = x.strip()
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", x))
+
+# =============================================================================
 # Critério / Prioridade
 # =============================================================================
 
@@ -161,6 +172,11 @@ def _accepts(inf: str, orgao: str, natureza: str,
         return False
     return True
 
+def _locked_mask(df: pd.DataFrame) -> pd.Series:
+    if "Locked" in df.columns:
+        return df["Locked"].astype(bool).reindex(df.index).fillna(False)
+    return pd.Series(False, index=df.index)
+
 def _apply_routing_rules(df_pool: pd.DataFrame,
                          rules: list,
                          filtros_grupo_natureza: Dict[str, List[str]],
@@ -171,7 +187,7 @@ def _apply_routing_rules(df_pool: pd.DataFrame,
     Escolhe a mais específica; empate: a primeira. Exclusiva? => Locked=True.
 
     only_locked_map:
-      - Se destino exige "somente Locked", regras NÃO-exclusivas não atribuem para ele (evita vai-e-volta).
+      - Se destino exige "somente Locked", regras NÃO-exclusivas não atribuem para ele.
       - Regras exclusivas (Locked) sempre prevalecem.
     """
     if only_locked_map is None:
@@ -244,22 +260,21 @@ def _redistribute(df_unassigned: pd.DataFrame,
                   filtros_orgao_origem: Dict[str, List[str]],
                   only_locked_map: Dict[str, bool]) -> pd.DataFrame:
     """
-    Round-robin por natureza, garantindo DESTINO para 100% dos itens (desde que exista ao menos 1 informante no pool).
+    Round-robin por natureza, garantindo DESTINO para 100% dos itens
+    (desde que exista ao menos 1 informante no pool aplicável).
 
-    Ordem de tentativa (cascata):
-      T0: candidatos que NÃO são only-locked e PASSAM na whitelist
-      T1: candidatos que NÃO são only-locked ignorando whitelist (fallback)
-      T2: candidatos only-locked que PASSAM na whitelist (fallback)
-      T3: candidatos only-locked ignorando whitelist (fallback final)
+    Cascata:
+      T0: não-only-locked + respeita whitelist
+      T1: não-only-locked + ignora whitelist
+      T2: only-locked + respeita whitelist
+      T3: only-locked + ignora whitelist (final)
 
-    Quando cair em T1/T2/T3, marca colunas:
-      'Fallback Tier' e 'Fallback Motivo'
+    Se cair em T1/T2/T3: marca 'Fallback Tier' e 'Fallback Motivo'.
     """
     if df_unassigned.empty:
         return df_unassigned
 
     df_unassigned = df_unassigned.copy()
-
     if "Fallback Tier" not in df_unassigned.columns:
         df_unassigned["Fallback Tier"] = ""
     if "Fallback Motivo" not in df_unassigned.columns:
@@ -267,13 +282,10 @@ def _redistribute(df_unassigned: pd.DataFrame,
 
     rr_indices = {gn: 0 for gn in df_unassigned["Grupo Natureza"].unique()}
 
-    def _candidates(informantes_do_grupo: List[str],
-                    orgao: str,
-                    natureza: str,
-                    allow_only_locked: bool,
-                    ignore_whitelist: bool) -> List[str]:
+    def _candidates(pool: List[str], orgao: str, natureza: str,
+                    allow_only_locked: bool, ignore_whitelist: bool) -> List[str]:
         cand = []
-        for inf in informantes_do_grupo:
+        for inf in pool:
             if (not allow_only_locked) and bool(only_locked_map.get(inf, False)):
                 continue
             if ignore_whitelist or _accepts(inf, orgao, natureza, filtros_grupo_natureza, filtros_orgao_origem):
@@ -285,32 +297,27 @@ def _redistribute(df_unassigned: pd.DataFrame,
         natureza = row["Grupo Natureza"]
         orgao = row["Orgão Origem"]
 
-        informantes_do_grupo = informantes_grupo_a if (origens_especiais and orgao in origens_especiais) else informantes_grupo_b
+        pool = informantes_grupo_a if (origens_especiais and orgao in origens_especiais) else informantes_grupo_b
 
-        # T0
-        candidatos = _candidates(informantes_do_grupo, orgao, natureza, allow_only_locked=False, ignore_whitelist=False)
+        candidatos = _candidates(pool, orgao, natureza, allow_only_locked=False, ignore_whitelist=False)
         tier = "T0"
         motivo = ""
 
-        # T1
         if not candidatos:
-            candidatos = _candidates(informantes_do_grupo, orgao, natureza, allow_only_locked=False, ignore_whitelist=True)
+            candidatos = _candidates(pool, orgao, natureza, allow_only_locked=False, ignore_whitelist=True)
             tier = "T1"
             motivo = "Sem candidato na whitelist; whitelist ignorada"
 
-        # T2
         if not candidatos:
-            candidatos = _candidates(informantes_do_grupo, orgao, natureza, allow_only_locked=True, ignore_whitelist=False)
+            candidatos = _candidates(pool, orgao, natureza, allow_only_locked=True, ignore_whitelist=False)
             tier = "T2"
-            motivo = "Somente candidatos only-locked disponíveis; manteve whitelist"
+            motivo = "Somente candidates only-locked disponíveis; manteve whitelist"
 
-        # T3
         if not candidatos:
-            candidatos = _candidates(informantes_do_grupo, orgao, natureza, allow_only_locked=True, ignore_whitelist=True)
+            candidatos = _candidates(pool, orgao, natureza, allow_only_locked=True, ignore_whitelist=True)
             tier = "T3"
             motivo = "Fallback final: only-locked e whitelist ignorados"
 
-        # Caso extremo: ninguém disponível no pool/grupo
         if not candidatos:
             row["Informante"] = ""
             row["Fallback Tier"] = "SEM_CANDIDATO"
@@ -330,19 +337,9 @@ def _redistribute(df_unassigned: pd.DataFrame,
 
     return pd.DataFrame(out_rows)
 
-# ============
-# Locked util
-# ============
-
-def _locked_mask(df: pd.DataFrame) -> pd.Series:
-    if "Locked" in df.columns:
-        return df["Locked"].astype(bool).reindex(df.index).fillna(False)
-    return pd.Series(False, index=df.index)
-
 # =============================================================================
-# PREVENÇÃO — listas individuais (<=200)
-# Agora: NÃO filtra por whitelist (para nunca "sumir" item atribuído).
-# Em vez disso, marca ForaWhitelist nos não-Locked.
+# PREVENÇÃO — listas individuais (<=200) sem "sumir" processos
+# (não filtra whitelist; apenas marca ForaWhitelist em não-Locked)
 # =============================================================================
 
 def _apply_prevention_top200(res_final: pd.DataFrame, df_prev_map: Optional[pd.DataFrame],
@@ -377,7 +374,6 @@ def _apply_prevention_top200(res_final: pd.DataFrame, df_prev_map: Optional[pd.D
         nonlocked   = df_inf[~_locked_mask(df_inf)].copy()
 
         locked_part["ForaWhitelist"] = False
-        # Marca fora da whitelist nos NÃO-locked (mas não filtra)
         nonlocked["ForaWhitelist"] = nonlocked.apply(
             lambda r: not _accepts(inf, r["Orgão Origem"], r["Grupo Natureza"], filtros_grupo_natureza, filtros_orgao_origem),
             axis=1
@@ -401,7 +397,7 @@ def _apply_prevention_top200(res_final: pd.DataFrame, df_prev_map: Optional[pd.D
 
 # =============================================================================
 # STICK ESTRITO — cola apenas o que já era do informante (Top-200),
-# whitelist NÃO barra itens Locked, e respeita travas/only-locked do destino.
+# whitelist NÃO barra itens Locked; respeita only-locked do destino.
 # =============================================================================
 
 def _stick_previous_topN_STRICT(res_df: pd.DataFrame, df_prev_map: pd.DataFrame,
@@ -409,12 +405,12 @@ def _stick_previous_topN_STRICT(res_df: pd.DataFrame, df_prev_map: pd.DataFrame,
                                 filtros_orgao_origem: Dict[str, List[str]],
                                 only_locked_map: Dict[str, bool], top_n_per_inf: int = 200):
     if res_df.empty or df_prev_map is None or df_prev_map.empty:
-        return res_df, pd.DataFrame(columns=["Informante","colados","bloq_locked_outro","bloq_only_locked","bloq_whitelist"])
+        return res_df, pd.DataFrame(columns=["Informante","colados","bloq_only_locked","bloq_whitelist"])
 
     prev = df_prev_map.copy()
     prev.columns = [c.strip() for c in prev.columns]
     if not {"Processo", "Informante"}.issubset(set(prev.columns)):
-        return res_df, pd.DataFrame(columns=["Informante","colados","bloq_locked_outro","bloq_only_locked","bloq_whitelist"])
+        return res_df, pd.DataFrame(columns=["Informante","colados","bloq_only_locked","bloq_whitelist"])
 
     prev["Processo"]   = prev["Processo"].astype(str).str.strip()
     prev["Informante"] = prev["Informante"].astype(str).str.strip().str.upper()
@@ -427,17 +423,14 @@ def _stick_previous_topN_STRICT(res_df: pd.DataFrame, df_prev_map: pd.DataFrame,
     df["CustomPriority"] = df["Critério"].apply(lambda x: priority_map.get(x, 4))
 
     diag_rows = []
-    prev_map = dict(zip(prev["Processo"], prev["Informante"]))
-
     for inf in sorted(df["Informante"].astype(str).str.upper().dropna().unique()):
         if str(inf).strip() == "":
             continue
 
         prev_set = set(prev[prev["Informante"] == inf]["Processo"].astype(str))
-
         bloco = df[df["Processo"].astype(str).isin(prev_set)].copy()
         if bloco.empty:
-            diag_rows.append({"Informante": inf, "colados": 0, "bloq_locked_outro": 0, "bloq_only_locked": 0, "bloq_whitelist": 0})
+            diag_rows.append({"Informante": inf, "colados": 0, "bloq_only_locked": 0, "bloq_whitelist": 0})
             continue
 
         bloco["ok_whitelist"] = bloco.apply(
@@ -452,31 +445,25 @@ def _stick_previous_topN_STRICT(res_df: pd.DataFrame, df_prev_map: pd.DataFrame,
         bloco = bloco.sort_values(by=["CustomPriority", "Dias no Orgão"], ascending=[True, False]).head(top_n_per_inf)
 
         if bloco.empty:
-            diag_rows.append({"Informante": inf, "colados": 0, "bloq_locked_outro": 0, "bloq_only_locked": 0, "bloq_whitelist": int(len(prev_set))})
+            diag_rows.append({"Informante": inf, "colados": 0, "bloq_only_locked": 0, "bloq_whitelist": int(len(prev_set))})
             continue
 
         sl_only = bool(only_locked_map.get(inf, False))
-
-        def blocked_only_locked(row):
-            return bool(sl_only and not row.get("Locked", False))
-
-        bloco["bloq_only_locked"]  = bloco.apply(blocked_only_locked, axis=1)
+        bloco["bloq_only_locked"] = bloco.apply(lambda r: bool(sl_only and not r.get("Locked", False)), axis=1)
 
         colaveis = bloco[~bloco["bloq_only_locked"]].copy()
-
         if not colaveis.empty:
             df.loc[df["Processo"].astype(str).isin(colaveis["Processo"].astype(str)), "Informante"] = inf
 
         diag_rows.append({
             "Informante": inf,
             "colados": int(len(colaveis)),
-            "bloq_locked_outro": 0,
             "bloq_only_locked": int(bloco["bloq_only_locked"].sum()),
             "bloq_whitelist": 0
         })
 
     df = df.drop(columns=["CustomPriority"], errors="ignore")
-    diag_df = pd.DataFrame(diag_rows, columns=["Informante","colados","bloq_locked_outro","bloq_only_locked","bloq_whitelist"])
+    diag_df = pd.DataFrame(diag_rows, columns=["Informante","colados","bloq_only_locked","bloq_whitelist"])
     return df, diag_df
 
 # =============================================================================
@@ -521,14 +508,6 @@ else:
     st.info("Modo Produção: e-mails serão enviados conforme seleção.")
 st.markdown(f"**Modo selecionado:** {modo}")
 
-# Modelo de distribuição (inclui pool único)
-modelo_dist = st.radio(
-    "Modelo de distribuição (PRINCIPAIS):",
-    options=["A/B por órgão (atual)", "Pool único (todos para todos)"],
-    horizontal=True
-)
-st.session_state["modelo_dist"] = modelo_dist
-
 modo_envio = None
 if not test_mode:
     modo_envio = st.radio("Modo de envio:", options=["Produção - Gestores e Informantes", "Produção - Apenas Gestores"], horizontal=False)
@@ -543,7 +522,7 @@ managers_emails = st.text_input(
 # -----------------------------------------------------------------------------
 
 if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", "disponibilidade"]):
-    # ====== Leitura e normalização UPPER ======
+    # ====== Leitura e normalização para opções de filtro ======
     df_proc = pd.read_excel(files_dict["processos"])
     df_proc.columns = df_proc.columns.str.strip()
     if "Grupo Natureza" in df_proc.columns:
@@ -559,47 +538,201 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
     if "Tipo Processo" in df_proc.columns:
         df_proc = df_proc[df_proc["Tipo Processo"].astype(str).str.upper().str.strip() == "PRINCIPAL"]
 
-    df_disp = pd.read_excel(files_dict["disponibilidade"])
-    df_disp.columns = df_disp.columns.str.strip()
-    if "disponibilidade" in df_disp.columns:
-        df_disp = df_disp[df_disp["disponibilidade"].astype(str).str.lower() == "sim"].copy()
-    df_disp["informantes"] = df_disp["informantes"].astype(str).str.strip().str.upper()
-
-    informantes_principais = sorted(df_disp["informantes"].dropna().unique())
     grupo_natureza_options = sorted(df_proc["Grupo Natureza"].dropna().unique())
     orgaos_origem_options  = sorted(df_proc["Orgão Origem"].dropna().unique())
 
-    # ========== Filtros (whitelist) por informante ==========
-    st.markdown("### Filtros (whitelist) por informante")
-    st.caption("Vazio = aceita tudo. Se marcar Natureza e Órgão, exige interseção (E).")
+    # =========================
+    # CADASTRO EDITÁVEL (UI)
+    # =========================
+    st.markdown("## Cadastro de Informantes (válido para a execução)")
+    st.caption("Você pode incluir/editar informantes e e-mails na hora. A execução usa este cadastro (não precisa alterar o XLSX antes).")
+
+    df_disp_base = pd.read_excel(files_dict["disponibilidade"])
+    df_disp_base.columns = df_disp_base.columns.str.strip()
+
+    # garante colunas mínimas
+    if "informantes" not in df_disp_base.columns:
+        df_disp_base["informantes"] = ""
+    if "email" not in df_disp_base.columns:
+        df_disp_base["email"] = ""
+    if "disponibilidade" not in df_disp_base.columns:
+        df_disp_base["disponibilidade"] = "sim"
+
+    df_disp_base["informantes"] = df_disp_base["informantes"].astype(str).str.strip().str.upper()
+    df_disp_base["email"] = df_disp_base["email"].astype(str).str.strip()
+    df_disp_base["disponibilidade"] = df_disp_base["disponibilidade"].astype(str).str.strip().str.lower()
+
+    if "df_disp_editor" not in st.session_state:
+        st.session_state["df_disp_editor"] = df_disp_base.copy()
+
+    df_disp_editor = st.data_editor(
+        st.session_state["df_disp_editor"],
+        num_rows="dynamic",
+        use_container_width=True,
+        key="disp_editor",
+        column_config={
+            "informantes": st.column_config.TextColumn("Informante (NOME)", required=True),
+            "email": st.column_config.TextColumn("E-mail", required=False),
+            "disponibilidade": st.column_config.SelectboxColumn("Disponível?", options=["sim", "nao"], required=True),
+        }
+    )
+
+    df_disp_editor = df_disp_editor.copy()
+    df_disp_editor["informantes"] = df_disp_editor["informantes"].astype(str).str.strip().str.upper()
+    df_disp_editor["email"] = df_disp_editor["email"].astype(str).str.strip()
+    df_disp_editor["disponibilidade"] = df_disp_editor["disponibilidade"].astype(str).str.strip().str.lower()
+    df_disp_editor = df_disp_editor[df_disp_editor["informantes"].astype(str).str.strip() != ""].copy()
+
+    invalid_emails = df_disp_editor[
+        (df_disp_editor["email"].astype(str).str.strip() != "") &
+        (~df_disp_editor["email"].apply(_is_valid_email))
+    ]
+    if not invalid_emails.empty:
+        st.warning("Há e-mails com formato inválido no cadastro (o envio pode falhar).")
+
+    st.session_state["df_disp_editor"] = df_disp_editor
+
+    # =========================
+    # BOTÃO: baixar cadastro atualizado
+    # =========================
+    st.markdown("### Exportar cadastro atualizado")
+    st.caption("Baixe um XLSX com o cadastro acima para reaproveitar na próxima semana (você pode renomear para 'disponibilidade_equipe.xlsx').")
+
+    cadastro_export = df_disp_editor.copy()
+
+    # garante ordem e nomes padronizados (mantém somente colunas essenciais)
+    cols = ["informantes", "email", "disponibilidade"]
+    for c in cols:
+        if c not in cadastro_export.columns:
+            cadastro_export[c] = ""
+    cadastro_export = cadastro_export[cols]
+
+    cadastro_filename = f"disponibilidade_equipe_atualizada_{datetime.now().strftime('%Y%m%d')}.xlsx"
+    cadastro_bytes = to_excel_bytes(cadastro_export)
+
+    st.download_button(
+        "Baixar disponibilidade atualizada (XLSX)",
+        data=cadastro_bytes,
+        file_name=cadastro_filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    df_disp_disponiveis = df_disp_editor[df_disp_editor["disponibilidade"] == "sim"].copy()
+    informantes_disponiveis = sorted(df_disp_disponiveis["informantes"].dropna().unique().tolist())
+    informantes_emails_ui = dict(zip(df_disp_editor["informantes"], df_disp_editor["email"]))
+
+    if not informantes_disponiveis:
+        st.error("Não há informantes com disponibilidade = 'sim'. Ajuste o cadastro acima para prosseguir.")
+        st.stop()
+
+    # =========================
+    # Modelo de distribuição
+    # =========================
+    st.markdown("## Modelo de Distribuição (PRINCIPAIS)")
+    modelo_dist = st.radio(
+        "Selecione o modelo:",
+        options=["A/B por órgão", "Pool único (todos para todos)"],
+        horizontal=True
+    )
+    st.session_state["modelo_dist"] = modelo_dist
+
+    # =========================
+    # Seletores (A/B) ou Pool Único
+    # =========================
+    st.markdown("## Seleção do Pool de Informantes (PRINCIPAIS)")
+    st.caption("Você pode escolher na hora quem entra nos grupos A/B ou no pool único. O cadastro acima controla quem está disponível.")
+
+    # defaults estáveis
+    if "grupo_a_sel" not in st.session_state:
+        st.session_state["grupo_a_sel"] = []
+    if "grupo_b_sel" not in st.session_state:
+        st.session_state["grupo_b_sel"] = informantes_disponiveis[:]  # default: todos
+    if "pool_unico_sel" not in st.session_state:
+        st.session_state["pool_unico_sel"] = informantes_disponiveis[:]  # default: todos
+
+    if modelo_dist == "A/B por órgão":
+        grupo_a_sel = st.multiselect(
+            "Grupo A (origens especiais)",
+            options=informantes_disponiveis,
+            default=[x for x in st.session_state["grupo_a_sel"] if x in informantes_disponiveis],
+            key="grupo_a_multiselect"
+        )
+
+        # impede sobreposição: remove A das opções de B
+        opts_b = [x for x in informantes_disponiveis if x not in grupo_a_sel]
+        default_b = [x for x in st.session_state["grupo_b_sel"] if x in opts_b]
+        if not default_b:
+            default_b = opts_b[:]
+
+        grupo_b_sel = st.multiselect(
+            "Grupo B (demais origens)",
+            options=opts_b,
+            default=default_b,
+            key="grupo_b_multiselect"
+        )
+
+        st.session_state["grupo_a_sel"] = grupo_a_sel
+        st.session_state["grupo_b_sel"] = grupo_b_sel
+
+        if not grupo_b_sel:
+            st.warning("Grupo B está vazio. Para 'demais origens', não haverá candidatos (pode gerar SEM_CANDIDATO).")
+
+    else:
+        pool_unico_sel = st.multiselect(
+            "Pool Único (todos para todos) — selecione quem participa",
+            options=informantes_disponiveis,
+            default=[x for x in st.session_state["pool_unico_sel"] if x in informantes_disponiveis] or informantes_disponiveis[:],
+            key="pool_unico_multiselect"
+        )
+        st.session_state["pool_unico_sel"] = pool_unico_sel
+
+        if not pool_unico_sel:
+            st.warning("Pool único vazio. A distribuição não terá candidatos (pode gerar SEM_CANDIDATO).")
+
+    # =========================
+    # Filtros (whitelist) por informante
+    # =========================
+    st.markdown("## Filtros (whitelist) por informante")
+    st.caption("Vazio = aceita tudo. Se marcar Natureza e Órgão, exige interseção (E). A whitelist é preferencial: em caso de falta de candidato, o sistema faz fallback para garantir destino.")
+
     filtros_grupo_natureza: Dict[str, List[str]] = {}
     filtros_orgao_origem: Dict[str, List[str]] = {}
-    for inf in informantes_principais:
+    for inf in informantes_disponiveis:
         filtros_grupo_natureza[inf] = st.multiselect(
             f"Naturezas aceitas — {inf}",
-            options=grupo_natureza_options, key=f"gn_{inf.replace(' ','_')}"
+            options=grupo_natureza_options,
+            key=f"gn_{inf.replace(' ','_')}"
         )
         filtros_orgao_origem[inf] = st.multiselect(
             f"Órgãos aceitos — {inf}",
-            options=orgaos_origem_options, key=f"org_{inf.replace(' ','_')}"
+            options=orgaos_origem_options,
+            key=f"org_{inf.replace(' ','_')}"
         )
 
-    # ========== Preferências: somente exclusivos (Locked) ==========
-    st.markdown("### Preferências por informante")
-    st.caption("Marque para que o informante receba apenas itens de regras exclusivas (Locked).")
+    # =========================
+    # Preferências: only-locked
+    # =========================
+    st.markdown("## Preferências por informante")
+    st.caption("Marque para que o informante receba apenas itens de regras EXCLUSIVAS (Locked). Em fallback extremo, ele pode receber outros itens para garantir destino (isso ficará marcado com Fallback Tier).")
     only_locked_map: Dict[str, bool] = st.session_state.get("only_locked_map", {})
-    for inf in informantes_principais:
+    for inf in informantes_disponiveis:
         key = f"only_locked_{inf.replace(' ', '_')}"
-        val = st.checkbox(f"{inf}: receber apenas itens exclusivos (Locked)?", value=only_locked_map.get(inf, False), key=key)
+        val = st.checkbox(
+            f"{inf}: receber apenas itens exclusivos (Locked)?",
+            value=only_locked_map.get(inf, False),
+            key=key
+        )
         only_locked_map[inf] = val
     st.session_state["only_locked_map"] = only_locked_map
 
-    # ========== Regras ==========
-    st.markdown("### Regras de roteamento por (Natureza, Órgão) → Informante")
+    # =========================
+    # Regras de roteamento
+    # =========================
+    st.markdown("## Regras de roteamento por (Natureza, Órgão) → Informante")
     st.caption("Use '(QUALQUER)' como curinga. Marque 'Exclusiva?' para reservar o par ao informante indicado.")
     natureza_opts = ["(QUALQUER)"] + grupo_natureza_options
     orgao_opts    = ["(QUALQUER)"] + orgaos_origem_options
-    inf_opts      = list(informantes_principais)
+    inf_opts      = list(informantes_disponiveis)
 
     if "rules_state_v2" not in st.session_state:
         st.session_state["rules_state_v2"] = pd.DataFrame(columns=["Informante", "Grupo Natureza", "Orgão Origem", "Exclusiva?"])
@@ -618,9 +751,11 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
     )
     st.session_state["rules_state_v2"] = rules_state
 
-    # ========== Botão principal ==========
+    # =========================
+    # Botão principal
+    # =========================
     if st.button("Executar Distribuição"):
-        def run_distribution(processos_file, processosmanter_file, obs_file, disp_file, numero,
+        def run_distribution(processos_file, processosmanter_file, obs_file, numero,
                              filtros_grupo_natureza, filtros_orgao_origem,
                              rules_df=None, prev_file=None):
 
@@ -631,9 +766,9 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
                     df[col] = df[col].astype(str).str.strip().str.upper()
             df["Processo"] = df["Processo"].astype(str)
 
-            df_manter = pd.read_excel(processosmanter_file); df_manter.columns = df_manter.columns.str.strip()
-            processos_validos = df_manter["Processo"].dropna().astype(str).unique()
-            df = df[df["Processo"].isin(processos_validos)]
+            df_manter_local = pd.read_excel(processosmanter_file); df_manter_local.columns = df_manter_local.columns.str.strip()
+            processos_validos_local = df_manter_local["Processo"].dropna().astype(str).unique()
+            df = df[df["Processo"].isin(processos_validos_local)]
             if "Tipo Processo" in df.columns:
                 df = df[df["Tipo Processo"].astype(str).str.upper().str.strip() == "PRINCIPAL"]
 
@@ -657,8 +792,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             def update_obs(row):
                 if pd.notna(row["Data Obs"]) and pd.notna(row["Data Última Carga"]) and row["Data Obs"] > row["Data Última Carga"]:
                     return pd.Series([row["Obs"], row["Data Obs"]])
-                else:
-                    return pd.Series(["", ""])
+                return pd.Series(["", ""])
 
             df[["Obs", "Data Obs"]] = df.apply(update_obs, axis=1)
             df = df.drop(columns=["Data Última Carga"])
@@ -671,37 +805,43 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             if "Locked" not in pre_df.columns:
                 pre_df["Locked"] = False
 
-            # 3) Disponibilidade / e-mails / pool
-            df_disp_local = pd.read_excel(disp_file); df_disp_local.columns = df_disp_local.columns.str.strip()
-            if "disponibilidade" in df_disp_local.columns:
-                df_disp_local = df_disp_local[df_disp_local["disponibilidade"].astype(str).str.lower() == "sim"].copy()
+            # 3) Cadastro/Disponibilidade em memória (UI)
+            df_disp_local = st.session_state["df_disp_editor"].copy()
             df_disp_local["informantes"] = df_disp_local["informantes"].astype(str).str.strip().str.upper()
+            df_disp_local["email"] = df_disp_local["email"].astype(str).str.strip()
+            df_disp_local["disponibilidade"] = df_disp_local["disponibilidade"].astype(str).str.strip().str.lower()
+
+            df_disp_ok = df_disp_local[df_disp_local["disponibilidade"] == "sim"].copy()
+            available = sorted(df_disp_ok["informantes"].dropna().unique().tolist())
             informantes_emails = dict(zip(df_disp_local["informantes"], df_disp_local["email"]))
 
-            available = sorted(df_disp_local["informantes"].dropna().unique().tolist())
-
             if not available:
-                raise ValueError("Nenhum informante disponível (disponibilidade_equipe.xlsx). Não é possível distribuir.")
+                raise ValueError("Nenhum informante disponível (cadastro/planilha).")
 
-            # A/B padrão
-            informantes_grupo_a = [
-                "ALESSANDRO RIBEIRO RIOS", "ANDRE LUIZ BREIA",
-                "ROSANE CESAR DE CARVALHO SCHLOSSER", "ANNA PAULA CYMERMAN"
-            ]
-            informantes_grupo_b = [
-                "LUCIA MARIA FELIPE DA SILVA", "MONICA ARANHA GOMES DO NASCIMENTO",
-                "RODRIGO SILVEIRA BARRETO", "JOSÉ CARLOS NUNES"
-            ]
-            informantes_grupo_a = [inf for inf in informantes_grupo_a if inf in available]
-            informantes_grupo_b = [inf for inf in informantes_grupo_b if inf in available]
+            modelo = st.session_state.get("modelo_dist", "A/B por órgão")
+            only_locked_map_local: Dict[str, bool] = st.session_state.get("only_locked_map", {})
+
+            # origens especiais: mantém padrão (pode virar seletor se você quiser depois)
             origens_especiais = ["SEC EST POLICIA MILITAR", "SEC EST DEFESA CIVIL"]
 
-            # Pool único para PRINCIPAIS
-            modelo_dist_local = st.session_state.get("modelo_dist", "A/B por órgão (atual)")
-            if modelo_dist_local == "Pool único (todos para todos)":
+            if modelo == "A/B por órgão":
+                grupo_a = [x for x in st.session_state.get("grupo_a_sel", []) if x in available]
+                grupo_b = [x for x in st.session_state.get("grupo_b_sel", []) if x in available]
+
+                # fallback defensivo: se B vazio, usa available exceto A
+                if not grupo_b:
+                    grupo_b = [x for x in available if x not in grupo_a]
+
+                informantes_grupo_a = [s.upper() for s in grupo_a]
+                informantes_grupo_b = [s.upper() for s in grupo_b]
+
+            else:
+                pool = [x for x in st.session_state.get("pool_unico_sel", []) if x in available]
+                if not pool:
+                    pool = available[:]  # fallback
                 informantes_grupo_a = []
-                informantes_grupo_b = available[:]   # todos participam
-                origens_especiais = []               # força uso do grupo_b
+                informantes_grupo_b = [s.upper() for s in pool]
+                origens_especiais = []  # força uso do pool geral (grupo_b)
 
             # 4) Regras
             rules_list = []
@@ -720,13 +860,10 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
                     })
 
             # 5) PRINCIPAIS: pool -> regras -> redistribuição com fallback (100% destino)
-            df_pool = res_df.copy()
-            df_pool = df_pool.sort_values(by="Dias no Orgão", ascending=False).reset_index(drop=True)
+            df_pool = res_df.copy().sort_values(by="Dias no Orgão", ascending=False).reset_index(drop=True)
             df_pool["Informante"] = ""
             if "Locked" not in df_pool.columns:
                 df_pool["Locked"] = False
-
-            only_locked_map_local: Dict[str, bool] = st.session_state.get("only_locked_map", {})
 
             assigned_by_rules, rem_after_rules = _apply_routing_rules(
                 df_pool, rules_list,
@@ -734,12 +871,9 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
                 only_locked_map=only_locked_map_local
             )
 
-            informantes_grupo_a_upper = [s.upper() for s in informantes_grupo_a]
-            informantes_grupo_b_upper = [s.upper() for s in informantes_grupo_b]
-
             distributed_df = _redistribute(
                 rem_after_rules,
-                informantes_grupo_a_upper, informantes_grupo_b_upper, origens_especiais,
+                informantes_grupo_a, informantes_grupo_b, origens_especiais,
                 filtros_grupo_natureza, filtros_orgao_origem,
                 only_locked_map=only_locked_map_local
             )
@@ -747,11 +881,10 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
             res_final = pd.concat([assigned_by_rules, distributed_df], ignore_index=True)
             res_final["Informante"] = res_final["Informante"].astype(str).str.strip().str.upper()
 
-            # Sanidade: aqui só sobra vazio se pool estiver vazio
             if (res_final["Informante"].astype(str).str.strip() == "").any():
-                st.error("Há processos sem informante. Verifique se existe ao menos 1 informante disponível no pool.")
+                st.error("Há processos sem informante. Verifique se existe ao menos 1 informante no pool selecionado.")
 
-            # 5.1) Ordenação final
+            # Ordenação final por critério
             res_final["Critério"] = res_final.apply(calcula_criterio, axis=1)
             res_final["CustomPriority"] = res_final["Critério"].apply(lambda x: priority_map.get(x, 4))
             res_final = res_final.sort_values(
@@ -801,7 +934,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
                 res_final.drop(columns=["Descrição Informação", "Funcionário Informação"], errors="ignore")
             )
 
-            # 8) Planilhas individuais — Pré (NÃO filtra whitelist; marca ForaWhitelist nos não-Locked)
+            # 8) Planilhas individuais — Pré (não filtra whitelist; marca ForaWhitelist nos não-Locked)
             def build_pre_individuals():
                 pre_individual_files = {}
                 pre_df_local = pre_df.copy()
@@ -836,7 +969,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
 
             pre_individual_files = build_pre_individuals()
 
-            # 9) Planilhas individuais — Principal (prevenção Top-200; NÃO filtra whitelist; marca ForaWhitelist)
+            # 9) Planilhas individuais — Principal (prevenção Top-200; não filtra whitelist; marca ForaWhitelist)
             res_individual_files = {}
             top200_dict = _apply_prevention_top200(
                 res_final, df_prev_map, filtros_grupo_natureza, filtros_orgao_origem
@@ -856,8 +989,8 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
              pre_individual_files, res_individual_files,
              informantes_emails, diag_df) = run_distribution(
                 files_dict["processos"], files_dict["processosmanter"],
-                files_dict["observacoes"], files_dict["disponibilidade"],
-                numero, filtros_grupo_natureza, filtros_orgao_origem,
+                files_dict["observacoes"], numero,
+                filtros_grupo_natureza, filtros_orgao_origem,
                 rules_df=st.session_state.get("rules_state_v2"), prev_file=prev_file
             )
         except Exception as e:
@@ -868,7 +1001,7 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
 
         # Diagnóstico do STICK
         if isinstance(diag_df, pd.DataFrame) and not diag_df.empty:
-            st.markdown("#### Diagnóstico da Prevenção (Stick Estrito Top-200)")
+            st.markdown("### Diagnóstico da Prevenção (Stick Estrito Top-200)")
             st.dataframe(diag_df.sort_values(by=["Informante"]).reset_index(drop=True), use_container_width=True)
 
         # Downloads
@@ -940,12 +1073,13 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
                             "• Principais: novos processos distribuídos.\n\n"
                             "Atenciosamente,\nGestão da 3ª CAP"
                         )
-                        send_email_with_two_attachments(email_destino, subject_inf, body_inf,
-                                                        attachment_pre, filename_pre,
-                                                        attachment_res, filename_res)
+                        send_email_with_two_attachments(
+                            email_destino, subject_inf, body_inf,
+                            attachment_pre, filename_pre,
+                            attachment_res, filename_res
+                        )
 
         st.session_state.numero = numero
+
 else:
     st.info("Carregue os quatro arquivos exigidos para habilitar a execução.")
-
-
