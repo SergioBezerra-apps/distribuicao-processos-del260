@@ -263,11 +263,17 @@ def _redistribute(df_unassigned: pd.DataFrame,
     Round-robin por natureza, garantindo DESTINO para 100% dos itens
     (desde que exista ao menos 1 informante no pool aplicável).
 
+    RESERVA POR WHITELIST:
+      Se algum informante do pool possui whitelist (natureza ou órgão configurados)
+      que cobre o processo em questão, o processo é reservado para esse subgrupo.
+      Informantes sem whitelist (aceita tudo) NÃO concorrem a esse processo enquanto
+      houver candidatos no pool reservado.
+
     Cascata:
-      T0: não-only-locked + respeita whitelist
-      T1: não-only-locked + ignora whitelist
-      T2: only-locked + respeita whitelist
-      T3: only-locked + ignora whitelist (final)
+      T0: pool reservado (se existir) ou pool completo; não-only-locked + respeita whitelist
+      T1: pool reservado; não-only-locked + ignora whitelist (ex.: only_locked impediu)
+      T2: pool completo; only-locked + respeita whitelist
+      T3: pool completo; only-locked + ignora whitelist (final)
 
     Se cair em T1/T2/T3: marca 'Fallback Tier' e 'Fallback Motivo'.
     """
@@ -299,21 +305,36 @@ def _redistribute(df_unassigned: pd.DataFrame,
 
         pool = informantes_grupo_a if (origens_especiais and orgao in origens_especiais) else informantes_grupo_b
 
-        candidatos = _candidates(pool, orgao, natureza, allow_only_locked=False, ignore_whitelist=False)
+        # --- RESERVA POR WHITELIST ---
+        # Informantes que têm whitelist explícita E essa whitelist cobre este processo.
+        # Informantes com whitelist vazia (aceita tudo) NÃO entram no pool reservado;
+        # eles são o fallback natural quando nenhum reservado existe.
+        pool_reservado = [
+            inf for inf in pool
+            if (filtros_grupo_natureza.get(inf) or filtros_orgao_origem.get(inf))
+               and _accepts(inf, orgao, natureza, filtros_grupo_natureza, filtros_orgao_origem)
+        ]
+        pool_primario = pool_reservado if pool_reservado else pool
+
+        # T0: pool primário (reservado ou completo), respeita whitelist e only_locked
+        candidatos = _candidates(pool_primario, orgao, natureza, allow_only_locked=False, ignore_whitelist=False)
         tier = "T0"
         motivo = ""
 
         if not candidatos:
-            candidatos = _candidates(pool, orgao, natureza, allow_only_locked=False, ignore_whitelist=True)
+            # T1: ainda no pool primário, ignora whitelist (ex.: only_locked impediu todos)
+            candidatos = _candidates(pool_primario, orgao, natureza, allow_only_locked=False, ignore_whitelist=True)
             tier = "T1"
-            motivo = "Sem candidato na whitelist; whitelist ignorada"
+            motivo = "Whitelist ignorada (sem candidato disponível no pool reservado)"
 
         if not candidatos:
+            # T2: pool completo, only-locked liberado, mantém whitelist
             candidatos = _candidates(pool, orgao, natureza, allow_only_locked=True, ignore_whitelist=False)
             tier = "T2"
             motivo = "Somente candidates only-locked disponíveis; manteve whitelist"
 
         if not candidatos:
+            # T3: pool completo, tudo liberado (fallback final)
             candidatos = _candidates(pool, orgao, natureza, allow_only_locked=True, ignore_whitelist=True)
             tier = "T3"
             motivo = "Fallback final: only-locked e whitelist ignorados"
