@@ -19,8 +19,8 @@ from xlsxwriter.utility import xl_col_to_name
 
 def _get_mail_creds():
 user = st.secrets.get("SMTP_USERNAME", os.getenv("SMTP_USERNAME", ""))
-pwd  = st.secrets.get(“SMTP_PASSWORD”, os.getenv("SMTP_PASSWORD", ""))
-host = st.secrets.get(“SMTP_SERVER”,   os.getenv("SMTP_SERVER",   "smtp.gmail.com"))
+pwd  = st.secrets.get("SMTP_PASSWORD", os.getenv("SMTP_PASSWORD", ""))
+host = st.secrets.get("SMTP_SERVER",   os.getenv("SMTP_SERVER",   "smtp.gmail.com"))
 port = int(st.secrets.get("SMTP_PORT", os.getenv("SMTP_PORT", 465)))
 return host, port, user, pwd
 
