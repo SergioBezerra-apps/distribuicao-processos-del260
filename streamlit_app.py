@@ -1211,4 +1211,4 @@ if all(k in files_dict for k in ["processos", "processosmanter", "observacoes", 
         st.session_state.numero = numero
 
 else:
-    st.info("Carregue os quatro arquivos exigidos para habilitar a execução.")                      )        st.session_state.numero = numero else:    st.info("Carregue os quatro arquivos exigidos para habilitar a execução.")
+    st.info("Carregue os quatro arquivos exigidos para habilitar a execução.")        
